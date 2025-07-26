@@ -296,7 +296,7 @@ class StrengthChartWindow(tk.Toplevel):
     def _create_strength_chart(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill='both', expand=True)
-        ttk.Label(main_frame, text="起手牌强度等级图表 (GTO策略参考)", font=("Arial", 16, "bold")).pack(pady=5)
+        ttk.Label(main_frame, text="起手牌强度等级图表", font=("Arial", 16, "bold")).pack(pady=5)
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(pady=10, fill='x', expand=True)
         grid_frame = ttk.Frame(content_frame)
@@ -306,10 +306,10 @@ class StrengthChartWindow(tk.Toplevel):
         hand_tiers = {
             "精英牌 (Elite)": ('#28a745', ['AA', 'KK', 'QQ', 'AKs']),
             "优质牌 (Premium)": ('#20c997', ['JJ', 'TT', 'AQs', 'AJs', 'KQs', 'AKo']),
-            "强可玩牌 (Strong Playable)": ('#17a2b8', ['99', 'ATs', 'KJs', 'QJs', 'JTs', 'AQo', 'KTo']),
+            "强可玩牌 (Strong Playable)": ('#17a2b8', ['99', 'ATs', 'KJs', 'QJs', 'JTs', 'AQo']),
             "投机可玩牌 (Speculative Playable)": ('#ffc107', ['88', '77', 'A9s', 'A8s', 'A7s', 'A6s', 'A5s', 'KTs', 'QTs', 'J9s', 'T9s', '98s', 'AJo', 'KQo']),
             "潜力牌 (Potential Hands)": ('#fd7e14', ['66', '55', 'A4s', 'A3s', 'A2s', 'K9s', 'Q9s', 'J8s', 'T8s', '97s', '87s', '76s', 'ATo', 'KJo', 'QJo', 'JTo']),
-            "边缘牌 (Marginal)": ('#6f42c1', ['44', '33', '22', 'K8s', 'K7s', 'K6s', 'K5s', 'K4s', 'K3s', 'K2s', 'Q8s', 'J7s', 'T7s', '96s', '86s', '75s', '65s', '54s']),
+            "边缘牌 (Marginal)": ('#6f42c1', ['KTo', 'QTo', '44', '33', '22', 'K8s', 'K7s', 'K6s', 'K5s', 'K4s', 'K3s', 'K2s', 'Q8s', 'J7s', 'T7s', '96s', '86s', '75s', '65s', '54s']),
             "弱牌 (Weak)": ('#6c757d', ['A9o', 'K9o', 'Q9o', 'J9o', 'T9o', 'A8o', 'A7o', 'A6o', 'A5o', 'A4o', 'A3o', 'A2o']),
             "不建议游戏 (Fold)": ('#343a40', [])
         }
@@ -344,8 +344,8 @@ class PokerApp(tk.Tk):
     def __init__(self, poker_logic):
         super().__init__()
         self.poker_logic = poker_logic
-        self.title("德州扑克策略分析套件 v8.1 (修复版)")
-        self.geometry("1250x900")
+        self.title("德州扑克分析")
+        self.geometry("1270x900")
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')
