@@ -405,7 +405,7 @@ class PokerApp(tk.Tk):
         equity_frame = ttk.LabelFrame(parent_pane, text="胜率分析")
         equity_frame.pack(fill='x', pady=10, anchor='n')
         self.equity_result_var = tk.StringVar(value="请设置牌局并点击'开始分析'")
-        ttk.Label(equity_frame, textvariable=self.equity_result_var, font=("Arial", 16, "bold"), anchor='center', wraplength=500).pack(fill='x', pady=20)
+        ttk.Label(equity_frame, textvariable=self.equity_result_var, font=("Arial", 13, "bold"), anchor='center', wraplength=500).pack(fill='x', pady=20)
         self._create_range_selector(parent_pane)
         
     def _create_board_selector(self, parent_frame):
