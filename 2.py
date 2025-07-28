@@ -2,13 +2,21 @@ import tkinter as tk
 from tkinter import ttk, font
 import json
 import os
+import sys
+
+def get_resource_path(filename):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, filename)
+    else:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 
 class EquityHeatmapApp(tk.Tk):
     """
     一个用于即时显示预先计算好的德州扑克翻前胜率热力图的GUI应用。
     此版本增加了清晰的横轴和纵轴。
     """
-    DB_FILENAME = "full_equity_database.json"
 
     def __init__(self):
         super().__init__()
@@ -34,20 +42,21 @@ class EquityHeatmapApp(tk.Tk):
 
         if not self.equity_database:
             # 如果未找到数据库，将错误信息显示在顶部标题处
-            self.title_label.config(text=f"错误: 未找到 '{self.DB_FILENAME}'。请先运行生成脚本。")
+            self.title_label.config(text="错误: 未找到 'full_equity_database.json'。请先运行生成脚本。")
         else:
             self.title_label.config(text="请在下方网格中点击一手牌开始分析")
 
     def _load_database(self):
         """在启动时加载预计算的JSON数据库文件。"""
-        if not os.path.exists(self.DB_FILENAME):
+        json_path = get_resource_path('full_equity_database.json')
+        if not os.path.exists(json_path):
             return None
         try:
-            with open(self.DB_FILENAME, 'r') as f:
-                print(f"成功从 '{self.DB_FILENAME}' 加载数据库。")
+            with open(json_path, 'r', encoding='utf-8') as f:
+                print(f"成功从 '{json_path}' 加载数据库。")
                 return json.load(f)
         except (json.JSONDecodeError, IOError) as e:
-            print(f"错误: 无法加载或解析数据库文件 '{self.DB_FILENAME}'. 错误: {e}")
+            print(f"错误: 无法加载或解析数据库文件 '{json_path}'. 错误: {e}")
             return None
 
     def _create_widgets(self):
