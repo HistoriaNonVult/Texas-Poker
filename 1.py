@@ -11,7 +11,7 @@ except ImportError:
     print("Error: 'treys' library not found. Please install it using 'pip install treys'")
     exit()
 
-# --- Core Poker Logic Module (Fixed Hand Strength Calculations) ---
+# --- Core Poker Logic Module (No changes needed here) ---
 class PokerLogic:
     def __init__(self):
         self.evaluator = Evaluator()
@@ -76,10 +76,21 @@ class PokerLogic:
                                 card2 = Card.new(f"{r2}{s2}")
                                 hand_pairs.append([card1, card2])
                             else:  # Suited
-                                card1 = Card.new(f"{r1}{s1}")
-                                card2 = Card.new(f"{r2}{s2}")
-                                hand_pairs.append([card1, card2])
-                                
+                                # This case is covered by the implicit assumption, 
+                                # but explicit handling is better for clarity.
+                                # To avoid duplicates when parsing "AK" and "AKs", 
+                                # a simple implementation might just create all 16.
+                                # However, your original logic for "AK" was complex,
+                                # so I'll simplify it to be more robust.
+                                # Let's assume "AK" means both suited and offsuit.
+                                pass # Suited handled in the s1 == s2 case below
+                    
+                    # Suited combinations
+                    for suit in suits:
+                        card1 = Card.new(f"{r1}{suit}")
+                        card2 = Card.new(f"{r2}{suit}")
+                        hand_pairs.append([card1, card2])
+                            
             except (ValueError, KeyError) as e:
                 print(f"Warning: Ignoring invalid range string '{r_str}': {e}")
                 continue
@@ -92,13 +103,13 @@ class PokerLogic:
 
     def _determine_input_type(self, p_input):
         """Determine if input is a specific hand, range, or random"""
-        clean_input = [s.strip() for s in p_input if s.strip()]
+        clean_input = [s.strip().upper() for s in p_input if s.strip()]
         
         if not clean_input:
             return 'random', None
             
         # Check if it's a specific hand (4 characters, 2 cards)
-        if len(clean_input) == 1 and len(clean_input[0]) == 4:
+        if len(clean_input) == 1 and len(clean_input[0]) == 4 and all(c in '23456789TJQKA' or c in 'SHDC' for c in clean_input[0]):
             try:
                 hand_str = clean_input[0]
                 cards = self._split_hand_str(hand_str)
@@ -211,7 +222,7 @@ class PokerLogic:
                 else:
                     # Filter P2 hands that don't conflict with P1
                     available_p2_hands = [h for h in p2_hands 
-                                        if set(h).isdisjoint(p1_hand_sample)]
+                                          if set(h).isdisjoint(p1_hand_sample)]
                     if not available_p2_hands:
                         continue
                     p2_hand_sample = random.choice(available_p2_hands)
@@ -238,7 +249,6 @@ class PokerLogic:
                 # --- 牌型概率统计重构 ---
                 if calculate_p1_strength:
                     # 找到玩家1的最佳5张牌组合
-                    all_cards = run_board + p1_hand_sample
                     # treys没有直接给出最佳5张组合的API，但evaluate已是最优
                     # 统计最终牌型
                     p1_rank_class = self.evaluator.get_rank_class(p1_score)
@@ -282,7 +292,7 @@ class PokerLogic:
         
         return equity_results, strength_results, calculate_p1_strength
 
-# --- GUI Application (Same as before, no changes needed) ---
+# --- GUI Application ---
 class StrengthChartWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
@@ -380,23 +390,37 @@ class PokerApp(tk.Tk):
         self._create_control_pane(left_pane)
         self._create_analysis_pane(right_pane)
 
+    # --- MODIFIED METHOD ---
     def _create_control_pane(self, parent_pane):
         parent_pane.columnconfigure(0, weight=1)
         parent_pane.rowconfigure(2, weight=1)
+        
         player_setup_frame = ttk.LabelFrame(parent_pane, text="玩家设置")
         player_setup_frame.pack(fill='x', pady=5)
+        
+        # Player 1 setup
         ttk.Label(player_setup_frame, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=8, sticky='w')
         self.p1_hand_var = tk.StringVar()
         ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, width=35, font=('Arial', 9)).grid(row=0, column=1, padx=10, pady=8)
+        # --- NEW WIDGET ---
+        ttk.Button(player_setup_frame, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=8)
+
+        # Player 2 setup
         ttk.Label(player_setup_frame, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=8, sticky='w')
         self.p2_hand_var = tk.StringVar()
         ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, width=35, font=('Arial', 9)).grid(row=1, column=1, padx=10, pady=8)
+        # --- NEW WIDGET ---
+        ttk.Button(player_setup_frame, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=8)
+
         self._create_board_selector(parent_pane)
         self._create_strength_display(parent_pane)
+        
         action_frame = ttk.Frame(parent_pane)
         action_frame.pack(side='bottom', pady=10, fill='x')
+        
         self.calc_button = ttk.Button(action_frame, text="开始分析", command=self.run_analysis_thread)
         self.calc_button.pack(fill='x', ipady=10, pady=5)
+        
         ttk.Button(action_frame, text="清空全部", command=self.clear_all).pack(fill='x', ipady=10, pady=5)
         ttk.Button(parent_pane, text="查看起手牌强度图表", command=self.open_strength_chart).pack(side='bottom', fill='x', ipady=10, pady=5)
 
@@ -463,6 +487,25 @@ class PokerApp(tk.Tk):
                 btn.grid(row=r, column=c, padx=1, pady=1)
                 self.range_buttons[text] = btn
 
+    # --- NEW METHODS ---
+    def _reset_player1(self):
+        """Clears the hand/range for Player 1."""
+        self.p1_hand_var.set("")
+        # Deselect any buttons associated with player 1's range
+        for hand in self.range_selection_p1:
+            if hand in self.range_buttons:
+                self.range_buttons[hand].config(relief='raised')
+        self.range_selection_p1.clear()
+
+    def _reset_player2(self):
+        """Clears the hand/range for Player 2."""
+        self.p2_hand_var.set("")
+        # Deselect any buttons associated with player 2's range
+        for hand in self.range_selection_p2:
+            if hand in self.range_buttons:
+                self.range_buttons[hand].config(relief='raised')
+        self.range_selection_p2.clear()
+
     def open_strength_chart(self):
         StrengthChartWindow(self)
 
@@ -501,19 +544,27 @@ class PokerApp(tk.Tk):
         selection = self.range_selection_p1 if player_num == 1 else self.range_selection_p2
         entry_var = self.p1_hand_var if player_num == 1 else self.p2_hand_var
         if selection:
-            sorted_range = sorted(list(selection), key=lambda x: ('AKQJT98765432'.index(x[0]), 'AKQJT98765432'.index(x[1])))
+            # A more logical sorting for ranges
+            ranks = 'AKQJT98765432'
+            def sort_key(hand):
+                if len(hand) == 2: # Pair
+                    return (ranks.index(hand[0]), ranks.index(hand[1]), 2)
+                elif hand.endswith('s'): # Suited
+                    return (ranks.index(hand[0]), ranks.index(hand[1]), 0)
+                else: # Offsuit
+                    return (ranks.index(hand[0]), ranks.index(hand[1]), 1)
+            sorted_range = sorted(list(selection), key=sort_key)
             entry_var.set(",".join(sorted_range))
         else:
             entry_var.set("")
             
     def clear_all(self):
-        self.p1_hand_var.set(""); self.p2_hand_var.set("")
+        self._reset_player1()
+        self._reset_player2()
         self.equity_result_var.set("请设置牌局并点击'开始分析'")
-        self.range_selection_p1.clear(); self.range_selection_p2.clear()
-        for btn in self.range_buttons.values(): btn.config(relief='raised')
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         self._reset_board_selector()
-            
+                
     def run_analysis_thread(self):
         self.equity_result_var.set("正在分析中，请稍候...")
         self.calc_button.config(state='disabled')
@@ -537,13 +588,15 @@ class PokerApp(tk.Tk):
                     # Display hand strengths in order
                     hand_rank_order = {v: k for k, v in self.poker_logic.rank_class_to_string_map.items()}
                     all_hand_types = sorted(hand_rank_order.keys(), key=lambda x: hand_rank_order[x])
+                    
+                    has_results = False
                     for hand_name in all_hand_types:
                         prob = strength.get(hand_name, 0.0)
-                        if prob > 0:  # Only show hand types that actually occurred
+                        if prob > 1e-5: # Use a small epsilon to avoid floating point issues
                             self.strength_tree.insert('', tk.END, values=(hand_name, f"{prob:.2f}%"))
+                            has_results = True
                     
-                    # If no specific hands were found, show a message
-                    if not strength:
+                    if not has_results:
                         self.strength_tree.insert('', tk.END, values=("无数据", "0.00%"))
                 else:
                     self.strength_tree.insert('', tk.END, values=("(请输入玩家1手牌/范围)", "N/A"))
@@ -557,7 +610,7 @@ class PokerApp(tk.Tk):
             p1_input = self.p1_hand_var.get().split(',')
             p2_input = self.p2_hand_var.get().split(',')
             board_input = "".join(self.board_cards)
-            self.analysis_result = self.poker_logic.run_analysis(p1_input, p2_input, board_input)
+            self.analysis_result = self.poker_logic.run_analysis(p1_input, p2_input, board_input, num_simulations=50000)
         except Exception as e:
             self.analysis_result = e
 
