@@ -253,7 +253,20 @@ class PokerApp(tk.Tk):
         super().__init__()
         self.poker_logic = poker_logic
         self.title("德州扑克分析工具")
-        self.geometry("1270x900")
+        window_width = 1370
+        window_height = 960  # 这是我们之前为解决按钮遮挡问题设置的高度
+
+        # 获取屏幕宽度和高度
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        # 计算窗口左上角的 x 和 y 坐标
+        position_x = int(screen_width / 2 - window_width / 2)
+        position_y = int(screen_height / 2 - window_height / 2) -33
+
+        # 设置窗口的尺寸和位置
+        self.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+        # --- 代码结束 ---
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')
