@@ -1,8 +1,8 @@
 # Texas-Poker Tool
 
 **牌力热力图**  
-> 使用 `Blanket.exe` 查看牌力分布，让你的德州扑克决策更精准。
-> 网页版见https://historianonvult.github.io/poker-heatmap
+> 使用 `Blanket.exe` 查看牌力分布，让你的德州扑克决策更精准。              
+> 网页版见 https://historianonvult.github.io/poker-heatmap
 ---
 
 **📱 Android 版本**  
