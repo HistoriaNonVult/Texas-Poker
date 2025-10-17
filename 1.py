@@ -194,7 +194,8 @@ class StrengthChartWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title("起手牌强度图表")
-        self.geometry("900x720")
+        self.geometry("900x750")
+        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
         self.configure(bg='#2e2e2e')
         self.transient(master)
         self.grab_set()
@@ -203,9 +204,9 @@ class StrengthChartWindow(tk.Toplevel):
     def _create_strength_chart(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill='both', expand=True)
-        ttk.Label(main_frame, text="起手牌强度等级图表", font=("Arial", 16, "bold")).pack(pady=5)
+        ttk.Label(main_frame, text="起手牌强度等级表", font=("Microsoft YaHei", 16, "bold")).pack(pady=(1,1))
         content_frame = ttk.Frame(main_frame)
-        content_frame.pack(pady=10, fill='x', expand=True)
+        content_frame.pack(pady=1, fill='x', expand=True)
         grid_frame = ttk.Frame(content_frame)
         grid_frame.pack(side='left', padx=(0, 20), anchor='n')
         legend_frame = ttk.LabelFrame(content_frame, text="图例")
@@ -228,23 +229,100 @@ class StrengthChartWindow(tk.Toplevel):
             legend_item.pack(anchor='w', padx=10, pady=5)
             tk.Label(legend_item, text=" ", bg=color, width=2, relief='solid', borderwidth=1).pack(side='left')
             ttk.Label(legend_item, text=f"  {tier_name}").pack(side='left')
+        
         ranks = 'AKQJT98765432'
         btn_font = font.Font(family='Arial', size=10, weight='bold')
+        
+        # 创建渐变变色的辅助函数
+        def create_hover_effect(cell, original_color):
+            # 存储动画相关的数据
+            cell.animation_data = {
+                'original_color': original_color,
+                'is_hovering': False,
+                'current_step': 0,
+                'timer_id': None
+            }
+            
+            def hex_to_rgb(hex_color):
+                """将hex颜色转换为RGB"""
+                hex_color = hex_color.lstrip('#')
+                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            
+            def rgb_to_hex(rgb):
+                """将RGB转换为hex颜色"""
+                return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            
+            def interpolate_color(color1, color2, factor):
+                """在两个颜色之间插值"""
+                rgb1 = hex_to_rgb(color1)
+                rgb2 = hex_to_rgb(color2)
+                result = tuple(rgb1[i] + (rgb2[i] - rgb1[i]) * factor for i in range(3))
+                return rgb_to_hex(result)
+            
+            def animate_color():
+                """执行颜色动画"""
+                data = cell.animation_data
+                total_steps = 15  # 总步数，数字越大动画越慢
+                
+                if data['is_hovering']:
+                    # 悬停时，逐渐变亮
+                    if data['current_step'] < total_steps:
+                        data['current_step'] += 1
+                        factor = data['current_step'] / total_steps
+                        # 目标颜色：原色变亮（增加RGB值）
+                        target = '#ffffff'
+                        new_color = interpolate_color(data['original_color'], target, factor * 0.3)
+                        cell.configure(bg=new_color)
+                        data['timer_id'] = cell.after(20, animate_color)  # 20ms后继续动画
+                else:
+                    # 离开时，逐渐恢复原色
+                    if data['current_step'] > 0:
+                        data['current_step'] -= 1
+                        factor = data['current_step'] / total_steps
+                        target = '#ffffff'
+                        new_color = interpolate_color(data['original_color'], target, factor * 0.3)
+                        cell.configure(bg=new_color)
+                        data['timer_id'] = cell.after(20, animate_color)
+                    else:
+                        cell.configure(bg=data['original_color'])
+            
+            def on_enter(event):
+                data = cell.animation_data
+                if data['timer_id']:
+                    cell.after_cancel(data['timer_id'])
+                data['is_hovering'] = True
+                animate_color()
+            
+            def on_leave(event):
+                data = cell.animation_data
+                if data['timer_id']:
+                    cell.after_cancel(data['timer_id'])
+                data['is_hovering'] = False
+                animate_color()
+            
+            cell.bind('<Enter>', on_enter)
+            cell.bind('<Leave>', on_leave)
+        
+        # 创建表格
         for r in range(len(ranks)):
             for c in range(len(ranks)):
                 if r < c: text = f"{ranks[r]}{ranks[c]}s"
                 elif c < r: text = f"{ranks[c]}{ranks[r]}o"
                 else: text = f"{ranks[r]}{ranks[c]}"
                 bg_color = hand_to_tier_color.get(text, '#343a40')
-                cell = tk.Label(grid_frame, text=text, font=btn_font, fg='white', bg=bg_color, width=5, height=2, relief='solid', borderwidth=1)
+                cell = tk.Label(grid_frame, text=text, font=btn_font, fg='white', bg=bg_color, 
+                            width=5, height=2, relief='solid', borderwidth=1)
                 cell.grid(row=r, column=c)
+                # 添加悬停效果
+                create_hover_effect(cell, bg_color)
+        
         strategy_frame = ttk.LabelFrame(main_frame, text="位置策略简介")
-        strategy_frame.pack(fill='x', pady=15)
+        strategy_frame.pack(fill='x', pady=1)
         strategy_text = ("位置是德州扑克中最重要的概念之一。你在牌桌上的位置决定了你的行动顺序。\n"
-                         "通常来说，你的位置越靠后（越晚行动），你就可以用越宽（越多）的范围来游戏。\n\n"
-                         "● 前位 (Early Position - EP): 你需要用最强的牌（如精英牌、优质牌）率先加注，因为你后面还有很多玩家未行动。\n"
-                         "● 中位 (Middle Position - MP): 可以适当增加一些强可玩牌和投机牌。\n"
-                         "● 后位 (Late Position - CO/BTN): 这是最好的位置。你可以用更宽的范围加注，包括很多潜力牌和边缘牌，以攻击盲注。")
+                        "通常来说，你的位置越靠后（越晚行动），你就可以用越宽（越多）的范围来游戏。\n\n"
+                        "● 前位 (Early Position - EP): 你需要用最强的牌（如精英牌、优质牌）率先加注，因为你后面还有很多玩家未行动。\n"
+                        "● 中位 (Middle Position - MP): 可以适当增加一些强可玩牌和投机牌。\n"
+                        "● 后位 (Late Position - CO/BTN): 这是最好的位置。你可以用更宽的范围加注，包括很多潜力牌和边缘牌，以攻击盲注。")
         ttk.Label(strategy_frame, text=strategy_text, wraplength=800, justify='left').pack(padx=10, pady=10)
 
 # --- GUI 应用 (UI/UX 优化后) ---
@@ -255,7 +333,7 @@ class PokerApp(tk.Tk):
         self.title("德州扑克分析工具")
         window_width = 1370
         window_height = 960
-        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  # 添加这一行
+        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
 
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -397,18 +475,114 @@ class PokerApp(tk.Tk):
         self.board_display_var = tk.StringVar(value="已选公共牌: ")
         ttk.Label(display_frame, textvariable=self.board_display_var, font=("Arial", 11, "bold")).pack(pady=5, side='left', padx=10)
         ttk.Button(display_frame, text="重置", command=self._reset_board_selector).pack(side='right', padx=5, pady=5)
-        card_pool_frame = ttk.Frame(board_frame); card_pool_frame.pack(pady=5, padx=10)
+        card_pool_frame = ttk.Frame(board_frame)
+        card_pool_frame.pack(pady=5, padx=10)
         self.board_card_buttons = {}
         suits_map = {'s': '♠', 'h': '♥', 'd': '♦', 'c': '♣'}
         suit_colors = {'s': 'black', 'h': 'red', 'd': 'blue', 'c': 'green'}
         ranks = 'AKQJT98765432'
+        
+        # 创建渐变变色的辅助函数
+        def create_board_hover_effect(btn, card_str):
+            # 存储动画相关的数据
+            btn.animation_data = {
+                'card_str': card_str,
+                'original_color': '#d0d0d0',
+                'is_hovering': False,
+                'current_step': 0,
+                'timer_id': None
+            }
+            
+            def hex_to_rgb(hex_color):
+                """将hex颜色转换为RGB"""
+                hex_color = hex_color.lstrip('#')
+                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            
+            def rgb_to_hex(rgb):
+                """将RGB转换为hex颜色"""
+                return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            
+            def interpolate_color(color1, color2, factor):
+                """在两个颜色之间插值"""
+                rgb1 = hex_to_rgb(color1)
+                rgb2 = hex_to_rgb(color2)
+                result = tuple(rgb1[i] + (rgb2[i] - rgb1[i]) * factor for i in range(3))
+                return rgb_to_hex(result)
+            
+            def get_original_color():
+                """获取按钮的原始颜色"""
+                card = btn.animation_data['card_str']
+                # 如果按钮被禁用（已选中），返回灰色
+                if card in self.board_cards:
+                    return '#555555'
+                else:
+                    return '#d0d0d0'
+            
+            def animate_color():
+                """执行颜色动画"""
+                data = btn.animation_data
+                total_steps = 15  # 总步数，数字越大动画越慢
+                
+                # 检查按钮是否被禁用
+                if str(btn['state']) == 'disabled':
+                    return  # 如果禁用了就不执行动画
+                
+                original_color = get_original_color()
+                
+                if data['is_hovering']:
+                    # 悬停时，逐渐变亮
+                    if data['current_step'] < total_steps:
+                        data['current_step'] += 1
+                        factor = data['current_step'] / total_steps
+                        # 目标颜色：原色变亮（增加RGB值）
+                        target = '#ffffff'
+                        new_color = interpolate_color(original_color, target, factor * 0.35)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)  # 20ms后继续动画
+                else:
+                    # 离开时，逐渐恢复原色
+                    if data['current_step'] > 0:
+                        data['current_step'] -= 1
+                        factor = data['current_step'] / total_steps
+                        target = '#ffffff'
+                        new_color = interpolate_color(original_color, target, factor * 0.35)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)
+                    else:
+                        btn.configure(bg=original_color)
+            
+            def on_enter(event):
+                # 如果按钮被禁用就不执行动画
+                if str(btn['state']) == 'disabled':
+                    return
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                data['is_hovering'] = True
+                animate_color()
+            
+            def on_leave(event):
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                data['is_hovering'] = False
+                animate_color()
+            
+            btn.bind('<Enter>', on_enter)
+            btn.bind('<Leave>', on_leave)
+        
+        # 创建公共牌按钮
         for i, suit_char in enumerate('shdc'):
             for j, rank_char in enumerate(ranks):
                 card_str = f"{rank_char}{suit_char}"
                 display_text = f"{rank_char}{suits_map[suit_char]}"
-                btn = tk.Button(card_pool_frame, text=display_text, font=('Arial', 10, 'bold'), width=4, fg=suit_colors[suit_char], bg='#d0d0d0', relief='raised', command=lambda s=card_str: self._on_board_card_select(s), takefocus=0)
+                btn = tk.Button(card_pool_frame, text=display_text, font=('Arial', 10, 'bold'), 
+                            width=4, fg=suit_colors[suit_char], bg='#d0d0d0', relief='raised', 
+                            command=lambda s=card_str: self._on_board_card_select(s), takefocus=0)
                 btn.grid(row=i, column=j, padx=1, pady=1)
                 self.board_card_buttons[card_str] = btn
+                # 添加悬停效果
+                create_board_hover_effect(btn, card_str)
 
     def _create_strength_display(self, parent_frame):
         strength_frame = ttk.LabelFrame(parent_frame, text="玩家1 牌力分布")
@@ -434,6 +608,94 @@ class PokerApp(tk.Tk):
         self.range_buttons = {}
         ranks = 'AKQJT98765432'
         btn_font = font.Font(family='Arial', size=9, weight='bold')
+        
+        # 创建渐变变色的辅助函数
+        def create_hover_effect(btn, hand_text):
+            # 存储动画相关的数据
+            btn.animation_data = {
+                'hand_text': hand_text,
+                'is_hovering': False,
+                'current_step': 0,
+                'timer_id': None
+            }
+            
+            def hex_to_rgb(hex_color):
+                """将hex颜色转换为RGB"""
+                hex_color = hex_color.lstrip('#')
+                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            
+            def rgb_to_hex(rgb):
+                """将RGB转换为hex颜色"""
+                return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            
+            def interpolate_color(color1, color2, factor):
+                """在两个颜色之间插值"""
+                rgb1 = hex_to_rgb(color1)
+                rgb2 = hex_to_rgb(color2)
+                result = tuple(rgb1[i] + (rgb2[i] - rgb1[i]) * factor for i in range(3))
+                return rgb_to_hex(result)
+            
+            def get_original_color():
+                """获取按钮的原始颜色"""
+                hand = btn.animation_data['hand_text']
+                if hand in self.range_selection_p1:
+                    return self.P1_COLOR
+                elif hand in self.range_selection_p2:
+                    return self.P2_COLOR
+                else:
+                    if len(hand) == 2: 
+                        return self.PAIR_BG
+                    elif hand.endswith('s'): 
+                        return self.SUITED_BG
+                    else: 
+                        return self.DEFAULT_BG
+            
+            def animate_color():
+                """执行颜色动画"""
+                data = btn.animation_data
+                total_steps = 15  # 总步数，数字越大动画越慢
+                original_color = get_original_color()
+                
+                if data['is_hovering']:
+                    # 悬停时，逐渐变亮
+                    if data['current_step'] < total_steps:
+                        data['current_step'] += 1
+                        factor = data['current_step'] / total_steps
+                        # 目标颜色：原色变亮（增加RGB值）
+                        target = '#ffffff'
+                        new_color = interpolate_color(original_color, target, factor * 0.3)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)  # 20ms后继续动画
+                else:
+                    # 离开时，逐渐恢复原色
+                    if data['current_step'] > 0:
+                        data['current_step'] -= 1
+                        factor = data['current_step'] / total_steps
+                        target = '#ffffff'
+                        new_color = interpolate_color(original_color, target, factor * 0.3)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)
+                    else:
+                        btn.configure(bg=original_color)
+            
+            def on_enter(event):
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                data['is_hovering'] = True
+                animate_color()
+            
+            def on_leave(event):
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                data['is_hovering'] = False
+                animate_color()
+            
+            btn.bind('<Enter>', on_enter)
+            btn.bind('<Leave>', on_leave)
+        
+        # 创建表格
         for r in range(len(ranks)):
             for c in range(len(ranks)):
                 if r < c: text, bg_color = f"{ranks[r]}{ranks[c]}s", self.SUITED_BG
@@ -442,6 +704,8 @@ class PokerApp(tk.Tk):
                 btn = tk.Button(grid_frame, text=text, width=5, height=2, relief='raised', font=btn_font, fg='white', bg=bg_color, command=lambda t=text: self.toggle_range_button(t), takefocus=0)
                 btn.grid(row=r, column=c, padx=1, pady=1)
                 self.range_buttons[text] = btn
+                # 添加悬停效果
+                create_hover_effect(btn, text)
 
     def _reset_player1(self):
         self.p1_hand_var.set("")
