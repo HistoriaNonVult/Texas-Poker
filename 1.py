@@ -254,19 +254,15 @@ class PokerApp(tk.Tk):
         self.poker_logic = poker_logic
         self.title("德州扑克分析工具")
         window_width = 1370
-        window_height = 960  # 这是我们之前为解决按钮遮挡问题设置的高度
+        window_height = 960
 
-        # 获取屏幕宽度和高度
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
 
-        # 计算窗口左上角的 x 和 y 坐标
         position_x = int(screen_width / 2 - window_width / 2)
-        position_y = int(screen_height / 2 - window_height / 2) -33
+        position_y = int(screen_height / 2 - window_height / 2) - 33
 
-        # 设置窗口的尺寸和位置
         self.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-        # --- 代码结束 ---
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')
@@ -287,21 +283,32 @@ class PokerApp(tk.Tk):
         self._create_widgets()
 
     def _configure_styles(self):
+        # --- 全局和通用组件样式 ---
         self.style.configure('.', background='#2e2e2e', foreground='white')
         self.style.configure('TFrame', background='#2e2e2e')
         self.style.configure('TLabel', background='#2e2e2e', foreground='white', font=('Arial', 10))
         self.style.configure('TLabelframe', background='#2e2e2e', bordercolor='#888')
         self.style.configure('TLabelframe.Label', background='#2e2e2e', foreground='white', font=('Arial', 11, 'bold'))
-        self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Arial', 10, 'bold'), borderwidth=1)
-        self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
         self.style.configure('TEntry', fieldbackground='#4a4a4a', foreground='white', insertbackground='white')
         self.style.configure('Treeview', fieldbackground='#3c3c3c', background='#3c3c3c', foreground='white', rowheight=25)
         self.style.configure('Treeview.Heading', font=('Arial', 11, 'bold'), background='#4a4a4a', foreground='white')
         self.style.map('Treeview.Heading', background=[('active', '#6a6a6a')])
         
+        # --- 进度条样式 ---
         self.style.configure("p1.Horizontal.TProgressbar", background=self.P1_COLOR)
         self.style.configure("p2.Horizontal.TProgressbar", background=self.P2_COLOR)
         self.style.configure("tie.Horizontal.TProgressbar", background='#6c757d')
+
+        # --- TTK 按钮样式 (恢复原状) ---
+        self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Arial', 10, 'bold'), borderwidth=1)
+        self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
+        
+        # --- 移除 TTK 按钮的虚线焦点框 ---
+        self.style.layout('TButton', [('Button.border', {'children': 
+            [('Button.padding', {'children': 
+                [('Button.label', {'side': 'left', 'expand': 1})]
+            })]
+        })])
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -398,7 +405,7 @@ class PokerApp(tk.Tk):
             for j, rank_char in enumerate(ranks):
                 card_str = f"{rank_char}{suit_char}"
                 display_text = f"{rank_char}{suits_map[suit_char]}"
-                btn = tk.Button(card_pool_frame, text=display_text, font=('Arial', 10, 'bold'), width=4, fg=suit_colors[suit_char], bg='#d0d0d0', relief='raised', command=lambda s=card_str: self._on_board_card_select(s))
+                btn = tk.Button(card_pool_frame, text=display_text, font=('Arial', 10, 'bold'), width=4, fg=suit_colors[suit_char], bg='#d0d0d0', relief='raised', command=lambda s=card_str: self._on_board_card_select(s), takefocus=0)
                 btn.grid(row=i, column=j, padx=1, pady=1)
                 self.board_card_buttons[card_str] = btn
 
@@ -415,10 +422,13 @@ class PokerApp(tk.Tk):
         range_frame.pack(fill='both', expand=True, pady=5)
         radio_frame = ttk.Frame(range_frame); radio_frame.pack(anchor='w', padx=10, pady=5)
         self.active_player_for_range = tk.IntVar(value=1)
-        self.p1_radio_btn = tk.Button(radio_frame, text="为玩家1选择", relief='flat', bg=self.P1_COLOR, fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#0056b3', activeforeground='white', command=lambda: self._select_player_for_range(1))
+        
+        # --- 恢复为 tk.Button 并添加 takefocus=0 ---
+        self.p1_radio_btn = tk.Button(radio_frame, text="为玩家1选择", relief='flat', bg=self.P1_COLOR, fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#0056b3', activeforeground='white', command=lambda: self._select_player_for_range(1), takefocus=0)
         self.p1_radio_btn.pack(side='left', padx=5, ipady=4)
-        self.p2_radio_btn = tk.Button(radio_frame, text="为玩家2选择", relief='flat', bg='#4a4a4a', fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#6a6a6a', activeforeground='white', command=lambda: self._select_player_for_range(2))
+        self.p2_radio_btn = tk.Button(radio_frame, text="为玩家2选择", relief='flat', bg='#4a4a4a', fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#6a6a6a', activeforeground='white', command=lambda: self._select_player_for_range(2), takefocus=0)
         self.p2_radio_btn.pack(side='left', padx=5, ipady=4)
+
         grid_frame = ttk.Frame(range_frame); grid_frame.pack(pady=10, padx=10)
         self.range_buttons = {}
         ranks = 'AKQJT98765432'
@@ -428,7 +438,7 @@ class PokerApp(tk.Tk):
                 if r < c: text, bg_color = f"{ranks[r]}{ranks[c]}s", self.SUITED_BG
                 elif c < r: text, bg_color = f"{ranks[c]}{ranks[r]}o", self.DEFAULT_BG
                 else: text, bg_color = f"{ranks[r]}{ranks[c]}", self.PAIR_BG
-                btn = tk.Button(grid_frame, text=text, width=5, height=2, relief='raised', font=btn_font, fg='white', bg=bg_color, command=lambda t=text: self.toggle_range_button(t))
+                btn = tk.Button(grid_frame, text=text, width=5, height=2, relief='raised', font=btn_font, fg='white', bg=bg_color, command=lambda t=text: self.toggle_range_button(t), takefocus=0)
                 btn.grid(row=r, column=c, padx=1, pady=1)
                 self.range_buttons[text] = btn
 
