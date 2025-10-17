@@ -255,6 +255,7 @@ class PokerApp(tk.Tk):
         self.title("德州扑克分析工具")
         window_width = 1370
         window_height = 960
+        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  # 添加这一行
 
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
