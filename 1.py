@@ -212,15 +212,44 @@ class StrengthChartWindow(tk.Toplevel):
         legend_frame = ttk.LabelFrame(content_frame, text="图例")
         legend_frame.pack(side='left', fill='y', anchor='n')
         hand_tiers = {
-            "精英牌 (Elite)": ('#28a745', ['AA', 'KK', 'QQ', 'AKs']),
-            "优质牌 (Premium)": ('#20c997', ['JJ', 'TT', 'AQs', 'AJs', 'KQs', 'AKo']),
-            "强可玩牌 (Strong Playable)": ('#17a2b8', ['99', 'ATs', 'KJs', 'QJs', 'JTs', 'AQo']),
-            "投机可玩牌 (Speculative Playable)": ('#ffc107', ['88', '77', 'A9s', 'A8s', 'A7s', 'A6s', 'A5s', 'KTs', 'QTs', 'J9s', 'T9s', '98s', 'AJo', 'KQo']),
-            "潜力牌 (Potential Hands)": ('#fd7e14', ['66', '55', 'A4s', 'A3s', 'A2s', 'K9s', 'Q9s', 'J8s', 'T8s', '97s', '87s', '76s', 'ATo', 'KJo', 'QJo', 'JTo']),
-            "边缘牌 (Marginal)": ('#6f42c1', ['KTo', 'QTo', '44', '33', '22', 'K8s', 'K7s', 'K6s', 'K5s', 'K4s', 'K3s', 'K2s', 'Q8s', 'J7s', 'T7s', '96s', '86s', '75s', '65s', '54s']),
-            "弱牌 (Weak)": ('#6c757d', ['A9o', 'K9o', 'Q9o', 'J9o', 'T9o', 'A8o', 'A7o', 'A6o', 'A5o', 'A4o', 'A3o', 'A2o']),
-            "不建议游戏 (Fold)": ('#343a40', [])
+            "精英牌 (Elite)": (
+                "#28a745",
+                ['AA', 'KK', 'QQ', 'JJ', 'AKs', 'AKo']
+            ),
+            "优质牌 (Premium)": (
+                "#20c997",
+                ['TT', '99', 'AQs', 'AJs', 'KQs']
+            ),
+            "强可玩牌 (Strong Playable)": (
+                "#17a2b8",
+                ['88', 'ATs', 'KJs', 'QJs', 'JTs', 'T9s', 'AQo']
+            ),
+            "投机可玩牌 (Speculative Playable)": (
+                "#ffc107",
+                ['77', '66', 'A9s', 'A8s', 'A7s', 'A6s', 'A5s', 'A4s', 'A3s', 'A2s',
+                'KTs', 'QTs', 'J9s', 'T8s', '98s', '87s', '76s', '65s', 'AJo', 'KQo']
+            ),
+            "潜力牌 (Potential Hands)": (
+                "#fd7e14",
+                ['55', '44', '33', '22', 'K9s', 'Q9s', 'J8s', 'T9o', '97s', '86s', '75s', '54s', 'ATo', 'KJo', 'QJo', 'JTo']
+            ),
+            "边缘牌 (Marginal)": (
+                "#6f42c1",
+                ['K8s', 'K7s', 'K6s', 'K5s', 'K4s', 'K3s', 'K2s',
+                'Q8s', 'J7s', 'T7s', '96s', '85s', '64s', '53s', 'KTo', 'QTo']
+            ),
+            "弱牌 (Weak)": (
+                "#6c757d",
+                ['A9o', 'A8o', 'A7o', 'A6o', 'A5o', 'A4o', 'A3o', 'A2o', 'K9o', 'Q9o', 'J9o', 'T9o', '98o']
+            ),
+            "不建议游戏 (Fold)": (
+                "#343a40",
+                ['K8o', 'Q8o', 'J8o', 'T8o', '97o', '86o', '75o', '64o',
+                'T6o', '95o', '84o', '73o', '62o', '52o', '42o', '32o', '72o']
+            )
         }
+
+
         hand_to_tier_color = {}
         for tier_name, (color, hands) in hand_tiers.items():
             for hand in hands: hand_to_tier_color[hand] = color
