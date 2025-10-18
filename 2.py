@@ -11,7 +11,6 @@ def get_resource_path(filename):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 
 
-
 class EquityHeatmapApp(tk.Tk):
     """
     一个用于即时显示预先计算好的德州扑克翻前胜率热力图的GUI应用。
@@ -22,7 +21,7 @@ class EquityHeatmapApp(tk.Tk):
         super().__init__()
         self.title("德州扑克胜率热力图")
         self.geometry("900x800") 
-        
+        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\Blanket.ico')  
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')
@@ -34,6 +33,7 @@ class EquityHeatmapApp(tk.Tk):
 
         self.ranks = 'AKQJT98765432'
         self.grid_buttons = {}
+        self.current_hero = None  # 追踪当前 HERO 手牌
         
         # 加载预计算的数据库
         self.equity_database = self._load_database()
@@ -84,6 +84,92 @@ class EquityHeatmapApp(tk.Tk):
             axis_label = ttk.Label(grid_container, text=rank, style='Axis.TLabel', anchor='center')
             axis_label.grid(row=i + 1, column=0, sticky='nsew', padx=1, pady=1)
 
+        # 创建渐变变色的辅助函数
+        def create_hover_effect(btn, hand_text):
+            # 存储动画相关的数据
+            btn.animation_data = {
+                'hand_text': hand_text,
+                'is_hovering': False,
+                'current_step': 0,
+                'timer_id': None,
+                'original_color': None
+            }
+            
+            def hex_to_rgb(hex_color):
+                """将hex颜色转换为RGB"""
+                hex_color = hex_color.lstrip('#')
+                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            
+            def rgb_to_hex(rgb):
+                """将RGB转换为hex颜色"""
+                return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            
+            def interpolate_color(color1, color2, factor):
+                """在两个颜色之间插值"""
+                rgb1 = hex_to_rgb(color1)
+                rgb2 = hex_to_rgb(color2)
+                result = tuple(rgb1[i] + (rgb2[i] - rgb1[i]) * factor for i in range(3))
+                return rgb_to_hex(result)
+            
+            def animate_color():
+                """执行颜色动画"""
+                data = btn.animation_data
+                total_steps = 15  # 总步数，数字越大动画越慢
+                
+                # 如果是 HERO 按钮，不执行动画
+                if hand_text == self.current_hero:
+                    return
+                
+                if data['is_hovering']:
+                    # 悬停时，逐渐变亮
+                    if data['current_step'] < total_steps:
+                        data['current_step'] += 1
+                        factor = data['current_step'] / total_steps
+                        # 目标颜色：原色变亮（增加RGB值）
+                        target = '#ffffff'
+                        new_color = interpolate_color(data['original_color'], target, factor * 0.3)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)  # 20ms后继续动画
+                else:
+                    # 离开时，逐渐恢复原色
+                    if data['current_step'] > 0:
+                        data['current_step'] -= 1
+                        factor = data['current_step'] / total_steps
+                        target = '#ffffff'
+                        new_color = interpolate_color(data['original_color'], target, factor * 0.3)
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)
+                    else:
+                        # 动画结束，恢复到原始颜色
+                        btn.configure(bg=data['original_color'])
+            
+            def on_enter(event):
+                # 如果是 HERO 按钮，不执行悬停效果
+                if hand_text == self.current_hero:
+                    return
+                
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                # 保存进入时的颜色作为原始颜色
+                data['original_color'] = btn.cget('bg')
+                data['is_hovering'] = True
+                animate_color()
+            
+            def on_leave(event):
+                # 如果是 HERO 按钮，不执行悬停效果
+                if hand_text == self.current_hero:
+                    return
+                
+                data = btn.animation_data
+                if data['timer_id']:
+                    btn.after_cancel(data['timer_id'])
+                data['is_hovering'] = False
+                animate_color()
+            
+            btn.bind('<Enter>', on_enter)
+            btn.bind('<Leave>', on_leave)
+
         # 创建13x13的按钮网格，并放置在坐标轴内部
         for r_idx, r1 in enumerate(self.ranks):
             for c_idx, r2 in enumerate(self.ranks):
@@ -94,11 +180,15 @@ class EquityHeatmapApp(tk.Tk):
                 btn = tk.Button(
                     grid_container, text=text, font=btn_font, fg='white', bg=bg_color,
                     width=6, height=2, relief='raised', borderwidth=2,
-                    command=lambda t=text: self.display_heatmap(t)
+                    command=lambda t=text: self.display_heatmap(t),
+                    takefocus=0,  # 移除焦点框
+                    cursor='hand2'  # 添加手型光标
                 )
                 # 将按钮放置在 (r+1, c+1) 的位置
                 btn.grid(row=r_idx + 1, column=c_idx + 1, padx=1, pady=1)
                 self.grid_buttons[text] = btn
+                # 添加悬停效果
+                create_hover_effect(btn, text)
         
         # --- 核心改动：移除了底部的 status_label ---
 
@@ -109,6 +199,8 @@ class EquityHeatmapApp(tk.Tk):
             return
         
         self._reset_grid_visuals()
+        # 更新当前 HERO
+        self.current_hero = hero_hand_text
         self.title_label.config(text=f"Hero: {hero_hand_text}")
 
         results = self.equity_database.get(hero_hand_text)
@@ -135,6 +227,8 @@ class EquityHeatmapApp(tk.Tk):
         return '#000000' if (0.299*r + 0.587*g + 0.114*b) > 150 else '#FFFFFF'
 
     def _reset_grid_visuals(self):
+        # 重置时清除之前的 HERO
+        self.current_hero = None
         for hand, button in self.grid_buttons.items():
             button.config(text=hand, fg='white')
             if len(hand) == 3 and hand.endswith('s'): button.config(bg='#4a7a96')
