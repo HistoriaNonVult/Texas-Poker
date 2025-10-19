@@ -195,7 +195,11 @@ class StrengthChartWindow(tk.Toplevel):
         super().__init__(master)
         self.title("起手牌强度图表")
         self.geometry("900x750")
-        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+        try:
+            # 尝试设置图标
+            self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico') 
+        except tk.TclError:
+            print("警告: 找不到图标文件 'TexasPoker.ico'。") 
         self.configure(bg='#2e2e2e')
         self.transient(master)
         self.grab_set()
@@ -392,7 +396,11 @@ class PokerApp(tk.Tk):
         self.title("德州扑克分析工具")
         window_width = 1370
         window_height = 960
-        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+        try:
+            # 尝试设置图标
+            self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+        except tk.TclError:
+            print("警告: 找不到图标文件 'TexasPoker.ico'。将使用默认图标。")
 
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -413,6 +421,9 @@ class PokerApp(tk.Tk):
         self.progress_var = tk.DoubleVar()
         self.P1_COLOR = '#007bff'
         self.P2_COLOR = '#dc3545'
+        # --- 变化: 增加了重叠颜色 ---
+        self.BOTH_COLOR = '#8a2be2'  # 紫罗兰色 (BlueViolet)
+        # --- 结束变化 ---
         self.DEFAULT_BG = '#4f4f4f'
         self.PAIR_BG = '#8fbc8f'
         self.SUITED_BG = '#4a7a96'
@@ -697,9 +708,15 @@ class PokerApp(tk.Tk):
             def get_original_color():
                 """获取按钮的原始颜色"""
                 hand = btn.animation_data['hand_text']
-                if hand in self.range_selection_p1:
+                # --- 变化: 增加了重叠逻辑 ---
+                in_p1 = hand in self.range_selection_p1
+                in_p2 = hand in self.range_selection_p2
+
+                if in_p1 and in_p2:
+                    return self.BOTH_COLOR
+                elif in_p1:
                     return self.P1_COLOR
-                elif hand in self.range_selection_p2:
+                elif in_p2:
                     return self.P2_COLOR
                 else:
                     if len(hand) == 2: 
@@ -708,6 +725,7 @@ class PokerApp(tk.Tk):
                         return self.SUITED_BG
                     else: 
                         return self.DEFAULT_BG
+                # --- 结束变化 ---
             
             def animate_color():
                 """执行颜色动画"""
@@ -804,10 +822,17 @@ class PokerApp(tk.Tk):
 
     def _update_range_grid_colors(self):
         for hand, btn in self.range_buttons.items():
-            if hand in self.range_selection_p1:
+            # --- 变化: 增加了重叠逻辑 ---
+            in_p1 = hand in self.range_selection_p1
+            in_p2 = hand in self.range_selection_p2
+
+            if in_p1 and in_p2:
+                btn.config(bg=self.BOTH_COLOR, relief='sunken')
+            elif in_p1:
                 btn.config(bg=self.P1_COLOR, relief='sunken')
-            elif hand in self.range_selection_p2:
+            elif in_p2:
                 btn.config(bg=self.P2_COLOR, relief='sunken')
+            # --- 结束变化 ---
             else:
                 if len(hand) == 2: bg = self.PAIR_BG
                 elif hand.endswith('s'): bg = self.SUITED_BG
