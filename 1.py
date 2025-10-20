@@ -3,6 +3,8 @@ from tkinter import ttk, font, messagebox
 import random
 import threading
 from collections import defaultdict
+import multiprocessing # 引入多进程模块
+import sys # 引入 sys 模块，用于处理打包后的环境
 
 # 建议安装 'treys' 库: pip install treys
 try:
@@ -11,23 +13,93 @@ except ImportError:
     print("错误: 未找到 'treys' 库。请使用 'pip install treys' 命令进行安装。")
     exit()
 
-# --- 核心扑克逻辑模块 (算法优化 & 修复后) ---
+# ##################################################################
+# ############### 新增的并行计算工作函数 ###########################
+# ##################################################################
+def _run_simulation_chunk(args):
+    """
+    执行一小块模拟任务。
+    这个函数是独立的，以便被其他进程调用。
+    """
+    # 解包传入的参数
+    p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards = args
+
+    evaluator = Evaluator() # 每个进程都需要创建自己的Evaluator实例
+    rank_class_to_string_map = {
+        1: "同花顺 (Straight Flush)", 2: "四条 (Four of a Kind)", 3: "葫芦 (Full House)",
+        4: "同花 (Flush)", 5: "顺子 (Straight)", 6: "三条 (Three of a Kind)",
+        7: "两对 (Two Pair)", 8: "一对 (One Pair)", 9: "高牌 (High Card)"
+    }
+
+    # 用于统计这个“块”的结果
+    p1_wins, p2_wins, ties = 0, 0, 0
+    p1_hand_strength_counts = defaultdict(int)
+    valid_sims = 0
+    calculate_p1_strength = p1_type != 'random'
+
+    # 在循环外创建一次牌库，并移除已知的公共牌
+    base_deck = list(master_deck_cards)
+    for card in board:
+        if card in base_deck:
+            base_deck.remove(card)
+
+    for _ in range(num_sims_chunk):
+        deck_cards = list(base_deck)
+
+        if p1_type == 'random':
+            if len(deck_cards) < 2: continue
+            p1_hand_sample = random.sample(deck_cards, 2)
+        else:
+            p1_hand_sample = random.choice(p1_hands)
+        
+        p1_hand_set = set(p1_hand_sample)
+        if not p1_hand_set.issubset(deck_cards): continue
+        for card in p1_hand_sample: deck_cards.remove(card)
+
+        if p2_type == 'random':
+            if len(deck_cards) < 2: continue
+            p2_hand_sample = random.sample(deck_cards, 2)
+        else:
+            p2_hand_sample = random.choice(p2_hands)
+        
+        if not p1_hand_set.isdisjoint(p2_hand_sample): continue
+        if not set(p2_hand_sample).issubset(deck_cards): continue
+        for card in p2_hand_sample: deck_cards.remove(card)
+        
+        run_board = list(board)
+        cards_needed = 5 - len(run_board)
+        if len(deck_cards) < cards_needed: continue
+        run_board.extend(random.sample(deck_cards, cards_needed))
+
+        p1_score = evaluator.evaluate(run_board, p1_hand_sample)
+        p2_score = evaluator.evaluate(run_board, p2_hand_sample)
+
+        if calculate_p1_strength:
+            p1_rank_class = evaluator.get_rank_class(p1_score)
+            if p1_rank_class in rank_class_to_string_map:
+                hand_type_str = rank_class_to_string_map[p1_rank_class]
+                p1_hand_strength_counts[hand_type_str] += 1
+        
+        if p1_score < p2_score: p1_wins += 1
+        elif p2_score < p1_score: p2_wins += 1
+        else: ties += 1
+        valid_sims += 1
+
+    # 返回这个块的计算结果
+    return p1_wins, p2_wins, ties, p1_hand_strength_counts, valid_sims
+
+# --- 核心扑克逻辑模块 ---
 class PokerLogic:
     def __init__(self):
         self.evaluator = Evaluator()
         self.rank_class_to_string_map = {
-            1: "同花顺 (Straight Flush)",
-            2: "四条 (Four of a Kind)",
-            3: "葫芦 (Full House)",
-            4: "同花 (Flush)",
-            5: "顺子 (Straight)",
-            6: "三条 (Three of a Kind)",
-            7: "两对 (Two Pair)",
-            8: "一对 (One Pair)",
-            9: "高牌 (High Card)"
+            1: "同花顺 (Straight Flush)", 2: "四条 (Four of a Kind)", 3: "葫芦 (Full House)",
+            4: "同花 (Flush)", 5: "顺子 (Straight)", 6: "三条 (Three of a Kind)",
+            7: "两对 (Two Pair)", 8: "一对 (One Pair)", 9: "高牌 (High Card)"
         }
         self.master_deck = Deck()
 
+    # (其他 _parse_hand_range, _split_hand_str, _determine_input_type 方法保持不变)
     def _parse_hand_range(self, range_str_list):
         hand_pairs = []
         for r_str in filter(None, [s.strip().upper() for s in range_str_list]):
@@ -88,106 +160,109 @@ class PokerLogic:
             parsed_hands = self._parse_hand_range(clean_input)
             if not parsed_hands: raise ValueError("无法解析手牌范围")
             return 'range', parsed_hands
-
+            
+    # ##################################################################
+    # ############### 重写 run_analysis 为任务分发器 ####################
+    # ##################################################################
     def run_analysis(self, p1_input_raw, p2_input_raw, board_str, num_simulations=50000, progress_callback=None):
         try:
+            # 所有的输入解析和冲突检查代码保持完全不变
             board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
             if len(set(board)) != len(board): raise ValueError("公共牌中包含重复的牌。")
             board_set = set(board)
             p1_type, p1_hands = self._determine_input_type(p1_input_raw)
             p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            calculate_p1_strength = p1_type != 'random'
+            if p1_type == 'hand' and not board_set.isdisjoint(p1_hands[0]): raise ValueError("玩家1的手牌与公共牌冲突。")
+            if p2_type == 'hand' and not board_set.isdisjoint(p2_hands[0]): raise ValueError("玩家2的手牌与公共牌冲突。")
+            if p1_type == 'range':
+                p1_hands = [h for h in p1_hands if board_set.isdisjoint(h)]
+                if not p1_hands: raise ValueError("玩家1的范围与公共牌完全冲突。")
+            if p2_type == 'range':
+                p2_hands = [h for h in p2_hands if board_set.isdisjoint(h)]
+                if not p2_hands: raise ValueError("玩家2的范围与公共牌完全冲突。")
+            if p1_type == 'hand' and p2_type == 'hand' and not set(p1_hands[0]).isdisjoint(p2_hands[0]):
+                raise ValueError("玩家1和玩家2的手牌存在冲突。")
+            elif p1_type == 'hand' and p2_type == 'range':
+                p1_hand_set = set(p1_hands[0])
+                p2_hands = [h for h in p2_hands if p1_hand_set.isdisjoint(h)]
+                if not p2_hands: raise ValueError("玩家2的范围与玩家1的手牌完全冲突。")
+            elif p2_type == 'hand' and p1_type == 'range':
+                p2_hand_set = set(p2_hands[0])
+                p1_hands = [h for h in p1_hands if p2_hand_set.isdisjoint(h)]
+                if not p1_hands: raise ValueError("玩家1的范围与玩家2的手牌完全冲突。")
         except ValueError as e:
             raise ValueError(f"输入解析错误: {e}")
 
-        calculate_p1_strength = p1_type != 'random'
-        if p1_type == 'hand' and not board_set.isdisjoint(p1_hands[0]): raise ValueError("玩家1的手牌与公共牌冲突。")
-        if p2_type == 'hand' and not board_set.isdisjoint(p2_hands[0]): raise ValueError("玩家2的手牌与公共牌冲突。")
-        if p1_type == 'range':
-            p1_hands = [h for h in p1_hands if board_set.isdisjoint(h)]
-            if not p1_hands: raise ValueError("玩家1的范围与公共牌完全冲突。")
-        if p2_type == 'range':
-            p2_hands = [h for h in p2_hands if board_set.isdisjoint(h)]
-            if not p2_hands: raise ValueError("玩家2的范围与公共牌完全冲突。")
-        if p1_type == 'hand' and p2_type == 'hand' and not set(p1_hands[0]).isdisjoint(p2_hands[0]):
-            raise ValueError("玩家1和玩家2的手牌存在冲突。")
-        elif p1_type == 'hand' and p2_type == 'range':
-            p1_hand_set = set(p1_hands[0])
-            p2_hands = [h for h in p2_hands if p1_hand_set.isdisjoint(h)]
-            if not p2_hands: raise ValueError("玩家2的范围与玩家1的手牌完全冲突。")
-        elif p2_type == 'hand' and p1_type == 'range':
-            p2_hand_set = set(p2_hands[0])
-            p1_hands = [h for h in p1_hands if p2_hand_set.isdisjoint(h)]
-            if not p1_hands: raise ValueError("玩家1的范围与玩家2的手牌完全冲突。")
-
-        p1_wins, p2_wins, ties = 0, 0, 0
-        p1_hand_strength_counts = defaultdict(int)
-        valid_sims = 0
-
-        for i in range(num_simulations):
-            if progress_callback and i % 1000 == 0:
-                progress_callback(i)
-
-            deck_cards = list(self.master_deck.cards)
-            for card in board:
-                if card in deck_cards: deck_cards.remove(card)
-
-            if p1_type == 'random':
-                p1_hand_sample = random.sample(deck_cards, 2)
-            else:
-                p1_hand_sample = random.choice(p1_hands)
+        # --- 并行计算设置 ---
+        # 自动获取CPU核心数
+        try:
+            # 限制核心数以避免在某些虚拟环境中过度消耗资源
+            num_cores = max(1, multiprocessing.cpu_count() - 1)
+        except NotImplementedError:
+            num_cores = 1 # 如果获取失败，则默认为1
             
-            p1_hand_set = set(p1_hand_sample)
-            if not p1_hand_set.issubset(deck_cards): continue
-            for card in p1_hand_sample: deck_cards.remove(card)
-
-            if p2_type == 'random':
-                if len(deck_cards) < 2: continue
-                p2_hand_sample = random.sample(deck_cards, 2)
-            else:
-                p2_hand_sample = random.choice(p2_hands)
-            
-            if not p1_hand_set.isdisjoint(p2_hand_sample): continue
-            if not set(p2_hand_sample).issubset(deck_cards): continue
-            for card in p2_hand_sample: deck_cards.remove(card)
-            
-            run_board = list(board)
-            cards_needed = 5 - len(run_board)
-            if len(deck_cards) < cards_needed: continue
-            run_board.extend(random.sample(deck_cards, cards_needed))
-
-            p1_score = self.evaluator.evaluate(run_board, p1_hand_sample)
-            p2_score = self.evaluator.evaluate(run_board, p2_hand_sample)
-
-            if calculate_p1_strength:
-                p1_rank_class = self.evaluator.get_rank_class(p1_score)
-                # --- BUG FIX: 增加判断以提高鲁棒性 ---
-                if p1_rank_class in self.rank_class_to_string_map:
-                    hand_type_str = self.rank_class_to_string_map[p1_rank_class]
-                    p1_hand_strength_counts[hand_type_str] += 1
-            
-            if p1_score < p2_score: p1_wins += 1
-            elif p2_score < p1_score: p2_wins += 1
-            else: ties += 1
-            valid_sims += 1
+        chunk_size = num_simulations // num_cores
+        tasks = []
         
-        if progress_callback: progress_callback(num_simulations)
-        if valid_sims == 0: raise ValueError("无法完成任何有效模拟。请检查输入设置。")
+        # 将Deck对象中的牌列表传递给工作函数，而不是整个Deck对象
+        master_deck_cards = list(self.master_deck.cards)
+        
+        # 创建任务列表，每个任务包含它需要的所有参数
+        for _ in range(num_cores):
+            tasks.append((p1_type, p1_hands, p2_type, p2_hands, board, chunk_size, master_deck_cards))
+        
+        # 处理余数，确保总模拟次数正确
+        remainder = num_simulations % num_cores
+        if remainder:
+            tasks.append((p1_type, p1_hands, p2_type, p2_hands, board, remainder, master_deck_cards))
 
+        total_p1_wins, total_p2_wins, total_ties = 0, 0, 0
+        total_p1_strength_counts = defaultdict(int)
+        total_valid_sims = 0
+        
+        # 创建进程池并执行任务
+        # 使用 with 语句可以确保进程池在使用后被正确关闭
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            # 使用 imap_unordered 来获取中间进度，它会在每个任务完成后立即返回结果
+            # 这使得进度条可以更平滑地更新
+            completed_sims = 0
+            for result_chunk in pool.imap_unordered(_run_simulation_chunk, tasks):
+                p1_wins, p2_wins, ties, p1_strength_counts, valid_sims = result_chunk
+                
+                # 汇总这一块的结果
+                total_p1_wins += p1_wins
+                total_p2_wins += p2_wins
+                total_ties += ties
+                for hand, count in p1_strength_counts.items():
+                    total_p1_strength_counts[hand] += count
+                total_valid_sims += valid_sims
+                
+                # 更新进度条
+                if progress_callback:
+                    completed_sims += valid_sims
+                    progress_callback(completed_sims)
+
+        if progress_callback: progress_callback(num_simulations)
+        if total_valid_sims == 0: raise ValueError("无法完成任何有效模拟。请检查输入设置。")
+
+        # --- 后续的 equity 和 strength 结果计算，使用 total_ 开头的汇总变量 ---
         equity_results = {
-            'p1_win': (p1_wins / valid_sims) * 100,
-            'p2_win': (p2_wins / valid_sims) * 100,
-            'tie': (ties / valid_sims) * 100
+            'p1_win': (total_p1_wins / total_valid_sims) * 100,
+            'p2_win': (total_p2_wins / total_valid_sims) * 100,
+            'tie': (total_ties / total_valid_sims) * 100
         }
         strength_results = {}
         if calculate_p1_strength:
-            total_strength_hands = sum(p1_hand_strength_counts.values())
+            total_strength_hands = sum(total_p1_strength_counts.values())
             if total_strength_hands > 0:
                 for rank in range(1, 10):
                     hand_type = self.rank_class_to_string_map[rank]
-                    prob = (p1_hand_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
+                    prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
                     strength_results[hand_type] = prob
         
         return equity_results, strength_results, calculate_p1_strength
+
 
 # --- 起手牌强度图表窗口 (无改动) ---
 class StrengthChartWindow(tk.Toplevel):
@@ -390,6 +465,7 @@ class StrengthChartWindow(tk.Toplevel):
 
 # --- GUI 应用 (UI/UX 优化后) ---
 class PokerApp(tk.Tk):
+    # (PokerApp 类的所有代码都保持不变, __init__, _configure_styles, _create_widgets 等)
     def __init__(self, poker_logic):
         super().__init__()
         self.poker_logic = poker_logic
@@ -878,6 +954,8 @@ class PokerApp(tk.Tk):
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         
         self.analysis_result = None
+        # 注意：这里仍然使用 threading.Thread，这是正确的！
+        # 它的作用是防止UI线程被阻塞，而真正的并行计算由 PokerLogic 内部的 multiprocessing 处理。
         self.analysis_thread = threading.Thread(target=self.run_analysis_calculation, daemon=True)
         self.analysis_thread.start()
         self.check_analysis_thread()
@@ -930,5 +1008,23 @@ class PokerApp(tk.Tk):
             self.analysis_result = e
 
 if __name__ == "__main__":
+    # ##########################################################################
+    # ### 关键修复：显式设置多进程启动方法，解决打包后子进程无限递归的问题 ###
+    # ##########################################################################
+    
+    # 1. 必须在所有其他代码之前调用 freeze_support()
+    # 这是让打包后的 .exe 正常使用多进程的关键
+    multiprocessing.freeze_support()
+
+    # 2. 显式设置启动方法（保持你原有的设置）
+    # 在Windows上，强制使用 'spawn' 模式，必须在创建任何进程或进程池之前调用。
+    if sys.platform.startswith('win'):
+        try:
+            multiprocessing.set_start_method('spawn', force=True)
+        except RuntimeError:
+            # 如果在某些特殊环境中方法已经被设置，忽略错误。
+            pass
+    
+    # 3. 现在可以安全地启动你的应用
     app = PokerApp(PokerLogic())
     app.mainloop()
