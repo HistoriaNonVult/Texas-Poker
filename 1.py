@@ -264,7 +264,7 @@ class PokerLogic:
         return equity_results, strength_results, calculate_p1_strength
 
 
-# --- 起手牌强度图表窗口 (无改动) ---
+# --- 起手牌强度图表窗口 ---
 class StrengthChartWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
@@ -278,7 +278,57 @@ class StrengthChartWindow(tk.Toplevel):
         self.configure(bg='#2e2e2e')
         self.transient(master)
         self.grab_set()
+
+        # ##################################################################
+        # ###################### 新增: 绑定键盘移动事件 ######################
+        # ##################################################################
+        self.bind('<KeyPress>', self._handle_window_movement)
+
+        # ##################################################################
+        # ############ 新增: 绑定关闭窗口事件以通知主窗口 ##############
+        # ##################################################################
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        
         self._create_strength_chart()
+
+    # ##################################################################
+    # ##################### 新增: 窗口关闭处理函数 #####################
+    # ##################################################################
+    def _on_close(self):
+        """当此窗口关闭时，通知主窗口并销毁自己"""
+        # self.master 指向的是 PokerApp 实例
+        self.master.strength_chart_window = None
+        self.destroy()
+
+    # ##################################################################
+    # ################## 新增: 窗口移动事件处理函数 ####################
+    # ##################################################################
+    def _handle_window_movement(self, event):
+        """处理键盘事件以移动此窗口"""
+        # 检查当前拥有焦点的控件是否是文本输入框 (为保持代码一致性，尽管此窗口没有)
+        focused_widget = self.focus_get()
+        if isinstance(focused_widget, ttk.Entry):
+            return  # 如果是输入框，则不执行任何操作
+
+        move_step = 15  # 每次按键移动的像素值
+        x = self.winfo_x()
+        y = self.winfo_y()
+
+        key = event.keysym.lower()
+
+        if key == 'w' or key == 'up':
+            y -= move_step
+        elif key == 's' or key == 'down':
+            y += move_step
+        elif key == 'a' or key == 'left':
+            x -= move_step
+        elif key == 'd' or key == 'right':
+            x += move_step
+        else:
+            return # 忽略其他所有按键
+
+        # 更新窗口位置，但不改变大小
+        self.geometry(f"+{x}+{y}")
 
     def _create_strength_chart(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -465,7 +515,7 @@ class StrengthChartWindow(tk.Toplevel):
 
 # --- GUI 应用 (UI/UX 优化后) ---
 class PokerApp(tk.Tk):
-    # (PokerApp 类的所有代码都保持不变, __init__, _configure_styles, _create_widgets 等)
+    # (PokerApp 类的 __init__, _configure_styles, _create_widgets 等方法)
     def __init__(self, poker_logic):
         super().__init__()
         self.poker_logic = poker_logic
@@ -504,8 +554,66 @@ class PokerApp(tk.Tk):
         self.PAIR_BG = '#8fbc8f'
         self.SUITED_BG = '#4a7a96'
         
+        # ##################################################################
+        # ################# 新增: 初始化图表窗口引用 ###################
+        # ##################################################################
+        self.strength_chart_window = None
+
         self._configure_styles()
         self._create_widgets()
+
+        # ##################################################################
+        # ###################### 新增: 绑定键盘移动事件 ######################
+        # ##################################################################
+        self.bind_all('<KeyPress>', self._handle_window_movement)
+
+    # ##################################################################
+    # ####################### 修改: 窗口移动事件处理函数 ###############
+    # ##################################################################
+    def _handle_window_movement(self, event):
+        """处理键盘事件以移动主窗口"""
+        # 如果图表窗口已打开，则主窗口不响应移动事件，由图表窗口自己处理
+        if self.strength_chart_window and self.strength_chart_window.winfo_exists():
+            return
+
+        # 检查当前拥有焦点的控件是否是文本输入框
+        focused_widget = self.focus_get()
+        if isinstance(focused_widget, ttk.Entry):
+            return  # 如果是输入框，则不执行任何操作，允许正常输入
+
+        move_step = 15  # 每次按键移动的像素值
+        x = self.winfo_x()
+        y = self.winfo_y()
+
+        key = event.keysym.lower()
+
+        if key == 'w' or key == 'up':
+            y -= move_step
+        elif key == 's' or key == 'down':
+            y += move_step
+        elif key == 'a' or key == 'left':
+            x -= move_step
+        elif key == 'd' or key == 'right':
+            x += move_step
+        else:
+            return # 忽略其他所有按键
+
+        # 更新窗口位置，但不改变大小
+        self.geometry(f"+{x}+{y}")
+
+    # ##################################################################
+    # ################# 新增: 打开图表窗口的专用函数 ###################
+    # ##################################################################
+    def _open_strength_chart(self):
+        """打开或激活起手牌强度图表窗口"""
+        # 如果窗口已存在，则将其提到顶层并给予焦点，避免重复创建
+        if self.strength_chart_window and self.strength_chart_window.winfo_exists():
+            self.strength_chart_window.lift()
+            self.strength_chart_window.focus_force()
+            return
+        
+        # 创建新窗口实例并保存引用
+        self.strength_chart_window = StrengthChartWindow(self)
 
     def _configure_styles(self):
         # --- 全局和通用组件样式 ---
@@ -581,7 +689,11 @@ class PokerApp(tk.Tk):
         self.calc_button = ttk.Button(action_frame, text="开始分析", command=self.run_analysis_thread)
         self.calc_button.pack(fill='x', ipady=10, pady=5)
         ttk.Button(action_frame, text="清空全部", command=self.clear_all).pack(fill='x', ipady=10, pady=5)
-        ttk.Button(parent_pane, text="查看起手牌强度图表", command=lambda: StrengthChartWindow(self)).pack(side='bottom', fill='x', ipady=10, pady=5)
+        
+        # ##################################################################
+        # ################ 修改: 按钮命令指向新函数 ######################
+        # ##################################################################
+        ttk.Button(parent_pane, text="查看起手牌强度图表", command=self._open_strength_chart).pack(side='bottom', fill='x', ipady=10, pady=5)
 
     def _create_analysis_pane(self, parent_pane):
         parent_pane.rowconfigure(1, weight=1)
