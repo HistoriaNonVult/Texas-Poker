@@ -195,38 +195,66 @@ class PokerLogic:
             raise ValueError(f"输入解析错误: {e}")
 
         # --- 并行计算设置 ---
-        # 自动获取CPU核心数
         try:
-            # 限制核心数以避免在某些虚拟环境中过度消耗资源
             num_cores = max(1, multiprocessing.cpu_count() - 1)
         except NotImplementedError:
-            num_cores = 1 # 如果获取失败，则默认为1
+            num_cores = 1
             
-        chunk_size = num_simulations // num_cores
-        tasks = []
+        # ##################################################################
+        # ############### 关键修改：平滑进度条逻辑 ######################
+        # ##################################################################
+        #
+        # 为了让进度条更平滑（而不是“跳跃”），我们创建更多、更小的任务块。
+        # 原始逻辑：任务数 = 核心数 (num_cores)
+        # 新逻辑：任务数 = max(核心数, 模拟总数 / 1000)
+        # 这样可以确保至少每 1000 次模拟更新一次进度条，同时充分利用所有核心。
         
-        # 将Deck对象中的牌列表传递给工作函数，而不是整个Deck对象
+        MIN_SIMS_PER_CHUNK = 1000  # 目标：大约每1000次模拟更新一次
+
+        # 计算任务数：至少是核心数，但如果模拟总数多，就增加任务数
+        if num_simulations <= 0:
+            num_tasks = 0
+            chunk_size = 0
+            remainder = 0
+        else:
+            # 基础任务数至少为核心数
+            num_tasks = max(num_cores, num_simulations // MIN_SIMS_PER_CHUNK)
+            # 但如果模拟总数太少（例如 500），任务数不能超过模拟数
+            if num_simulations < num_tasks:
+                num_tasks = num_simulations # 此时 chunk_size 将为 1
+            
+            chunk_size = num_simulations // num_tasks
+            remainder = num_simulations % num_tasks
+        
+        # ##################################################################
+        # ###################### 结束修改 #################################
+        # ##################################################################
+
+        tasks = []
         master_deck_cards = list(self.master_deck.cards)
         
-        # 创建任务列表，每个任务包含它需要的所有参数
-        for _ in range(num_cores):
-            tasks.append((p1_type, p1_hands, p2_type, p2_hands, board, chunk_size, master_deck_cards))
+        # 基础参数（不包含变化的 chunk_size）
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, board, master_deck_cards)
+
+        # 创建任务列表
+        for _ in range(num_tasks):
+            if chunk_size > 0:
+                # 插入 chunk_size 到正确的位置
+                tasks.append(base_args[:5] + (chunk_size,) + base_args[5:])
         
-        # 处理余数，确保总模拟次数正确
-        remainder = num_simulations % num_cores
-        if remainder:
-            tasks.append((p1_type, p1_hands, p2_type, p2_hands, board, remainder, master_deck_cards))
+        # 处理余数
+        if remainder > 0:
+            tasks.append(base_args[:5] + (remainder,) + base_args[5:])
 
         total_p1_wins, total_p2_wins, total_ties = 0, 0, 0
         total_p1_strength_counts = defaultdict(int)
         total_valid_sims = 0
         
         # 创建进程池并执行任务
-        # 使用 with 语句可以确保进程池在使用后被正确关闭
         with multiprocessing.Pool(processes=num_cores) as pool:
-            # 使用 imap_unordered 来获取中间进度，它会在每个任务完成后立即返回结果
-            # 这使得进度条可以更平滑地更新
+            # 使用 imap_unordered 来获取中间进度
             completed_sims = 0
+            # 这里的 tasks 列表现在可能包含很多任务，所以回调会更频繁
             for result_chunk in pool.imap_unordered(_run_simulation_chunk, tasks):
                 p1_wins, p2_wins, ties, p1_strength_counts, valid_sims = result_chunk
                 
@@ -240,18 +268,30 @@ class PokerLogic:
                 
                 # 更新进度条
                 if progress_callback:
+                    # 注意：这里我们累加的是 'valid_sims'，因为这才是
+                    # 真正完成的模拟次数，而不是任务块的理论大小(chunk_size)
                     completed_sims += valid_sims
                     progress_callback(completed_sims)
 
-        if progress_callback: progress_callback(num_simulations)
-        if total_valid_sims == 0: raise ValueError("无法完成任何有效模拟。请检查输入设置。")
-
-        # --- 后续的 equity 和 strength 结果计算，使用 total_ 开头的汇总变量 ---
-        equity_results = {
-            'p1_win': (total_p1_wins / total_valid_sims) * 100,
-            'p2_win': (total_p2_wins / total_valid_sims) * 100,
-            'tie': (total_ties / total_valid_sims) * 100
-        }
+        # 确保进度条最后能达到100%
+        if progress_callback: 
+            progress_callback(num_simulations)
+            
+        if total_valid_sims == 0: 
+            # 即使 num_simulations > 0, 也可能因为输入冲突导致 valid_sims=0
+            if num_simulations > 0:
+                raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
+            # 如果 num_simulations=0，则不报错，正常返回空结果
+        
+        # --- 后续的 equity 和 strength 结果计算 ---
+        equity_results = {'p1_win': 0, 'p2_win': 0, 'tie': 0}
+        if total_valid_sims > 0:
+            equity_results = {
+                'p1_win': (total_p1_wins / total_valid_sims) * 100,
+                'p2_win': (total_p2_wins / total_valid_sims) * 100,
+                'tie': (total_ties / total_valid_sims) * 100
+            }
+            
         strength_results = {}
         if calculate_p1_strength:
             total_strength_hands = sum(total_p1_strength_counts.values())
@@ -631,7 +671,16 @@ class PokerApp(tk.Tk):
         self.style.configure("p1.Horizontal.TProgressbar", background=self.P1_COLOR)
         self.style.configure("p2.Horizontal.TProgressbar", background=self.P2_COLOR)
         self.style.configure("tie.Horizontal.TProgressbar", background='#6c757d')
-
+        
+        # ##################################################################
+        # ############### 关键修改：移除绿色进度条样式 ###################
+        # ##################################################################
+        #
+        # 应用户要求，移除了自定义的 "main.Horizontal.TProgressbar" 样式
+        # 进度条将恢复为 ttk 'clam' 主题的默认外观
+        #
+        # ##################################################################
+        
         # --- TTK 按钮样式 (恢复原状) ---
         self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Arial', 10, 'bold'), borderwidth=1)
         self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
@@ -678,13 +727,20 @@ class PokerApp(tk.Tk):
         ttk.Entry(sim_frame, textvariable=self.num_simulations_var, width=15).pack(side='left')
 
         self._create_board_selector(parent_pane)
-        self._create_strength_display(parent_pane)
+        self._create_strength_display(parent_pane) # 此处已修复 NameError
         
         action_frame = ttk.Frame(parent_pane)
         action_frame.pack(side='bottom', pady=10, fill='x')
         
+        # ##################################################################
+        # ############### 关键修改：恢复为原始进度条 #####################
+        # ##################################################################
+        # 移除了 'style' 参数，恢复了 'ipady=3'，以匹配用户的原始代码
         self.analysis_progress_bar = ttk.Progressbar(action_frame, variable=self.progress_var)
         self.analysis_progress_bar.pack(fill='x', ipady=3, pady=(0, 8))
+        # ##################################################################
+        # ###################### 结束修改 #################################
+        # ##################################################################
         
         self.calc_button = ttk.Button(action_frame, text="开始分析", command=self.run_analysis_thread)
         self.calc_button.pack(fill='x', ipady=10, pady=5)
@@ -1055,13 +1111,19 @@ class PokerApp(tk.Tk):
     def run_analysis_thread(self):
         try:
             num_sims = int(self.num_simulations_var.get())
-            if num_sims <= 0: raise ValueError
+            if num_sims <= 0: 
+                if num_sims == 0:
+                    # 允许 0 次模拟，直接清空结果
+                    self._reset_equity_display()
+                    for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
+                    return
+                raise ValueError
         except ValueError:
-            messagebox.showerror("输入错误", "模拟次数必须是一个正整数。")
+            messagebox.showerror("输入错误", "模拟次数必须是一个非负整数。")
             return
 
         self._reset_equity_display()
-        self.analysis_progress_bar['maximum'] = num_sims
+        self.analysis_progress_bar['maximum'] = num_sims if num_sims > 0 else 1 # 避免 max=0
         self.calc_button.config(state='disabled')
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         
@@ -1086,6 +1148,13 @@ class PokerApp(tk.Tk):
                 self.p2_win_bar['value'] = equity['p2_win']
                 self.tie_var.set(f"{equity['tie']:.2f}%")
                 self.tie_bar['value'] = equity['tie']
+                
+                # 确保进度条在0模拟时也归零
+                if int(self.num_simulations_var.get()) == 0:
+                    self.progress_var.set(0)
+                else:
+                    # 确保进度条在计算完成后显示为100%
+                    self.progress_var.set(self.analysis_progress_bar['maximum'])
 
                 if show_strength:
                     hand_rank_order = {v: k for k, v in self.poker_logic.rank_class_to_string_map.items()}
@@ -1109,7 +1178,9 @@ class PokerApp(tk.Tk):
             num_sims = int(self.num_simulations_var.get())
             
             def progress_update(current_sim):
-                self.progress_var.set(current_sim)
+                # 确保进度条不会超过最大值（在多进程回调中可能发生轻微的竞态）
+                max_sims = self.analysis_progress_bar['maximum']
+                self.progress_var.set(min(current_sim, max_sims))
 
             self.analysis_result = self.poker_logic.run_analysis(
                 p1_input, p2_input, board_input, 
