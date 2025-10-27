@@ -5,6 +5,7 @@ import threading
 from collections import defaultdict
 import multiprocessing # 引入多进程模块
 import sys # 引入 sys 模块，用于处理打包后的环境
+import math # 引入 math 模块以使用缓动函数
 
 # 建议安装 'treys' 库: pip install treys
 try:
@@ -308,6 +309,12 @@ class PokerLogic:
 class StrengthChartWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
+        
+        # ##################################################################
+        # #################### 关键修改：添加淡入动画 ######################
+        # ##################################################################
+        self.wm_attributes('-alpha', 0.0) # 1. 初始透明
+
         self.title("起手牌强度图表")
         self.geometry("900x750")
         try:
@@ -317,7 +324,14 @@ class StrengthChartWindow(tk.Toplevel):
             print("警告: 找不到图标文件 'TexasPoker.ico'。") 
         self.configure(bg='#2e2e2e')
         self.transient(master)
-        self.grab_set()
+        
+        # ##################################################################
+        # #################### 关键修改：移除 grab_set #####################
+        # ##################################################################
+        # self.grab_set() # <-- 移除这行，这是导致黑屏的罪魁祸首
+        self.attributes('-topmost', True) # <-- 替换为 -topmost 保证窗口在最前
+        # ##################################################################
+        
 
         # ##################################################################
         # ###################### 新增: 绑定键盘移动事件 ######################
@@ -331,13 +345,28 @@ class StrengthChartWindow(tk.Toplevel):
         
         self._create_strength_chart()
 
+        # ##################################################################
+        # #################### 关键修改：启动淡入动画 ######################
+        # ##################################################################
+        self.after(10, self._start_fade_in) # 2. 启动动画
+
+
     # ##################################################################
-    # ##################### 新增: 窗口关闭处理函数 #####################
+    # ##################### 关键修改：窗口关闭处理函数 ###################
     # ##################################################################
     def _on_close(self):
         """当此窗口关闭时，通知主窗口并销毁自己"""
         # self.master 指向的是 PokerApp 实例
         self.master.strength_chart_window = None
+        
+        # ##################################################################
+        # ############ 关键修改：重新启用主窗口的按钮 ##################
+        # ##################################################################
+        try:
+            self.master.open_chart_button.config(state='normal')
+        except Exception as e:
+            print(f"启用按钮失败: {e}")
+            
         self.destroy()
 
     # ##################################################################
@@ -369,6 +398,49 @@ class StrengthChartWindow(tk.Toplevel):
 
         # 更新窗口位置，但不改变大小
         self.geometry(f"+{x}+{y}")
+
+    # ##################################################################
+    # ############### 新增：图表窗口的缓动动画函数 #####################
+    # ##################################################################
+    def _start_fade_in(self):
+        """(辅助函数) 初始化并启动淡入动画"""
+        self.animation_total_duration = 300  # 总毫秒数 (0.3秒)
+        self.animation_step_delay = 15       # 每一步的毫秒数 (约66 FPS)
+        
+        try:
+            total_steps = self.animation_total_duration / self.animation_step_delay
+        except ZeroDivisionError:
+            total_steps = 0 
+
+        if total_steps == 0:
+            self.wm_attributes('-alpha', 1.0)
+            return
+            
+        self.progress_increment = 1.0 / total_steps
+        self.current_progress = 0.0
+        
+        self._fade_in_step()
+
+    def _fade_in_step(self):
+        """(辅助函数) 执行淡入动画的单一步骤"""
+        self.current_progress += self.progress_increment
+        
+        if self.current_progress >= 1.0:
+            self.wm_attributes('-alpha', 1.0) # 确保最终为 1.0
+        else:
+            # 使用 math.sin 实现缓出（Ease-Out）
+            eased_alpha = math.sin(self.current_progress * (math.pi / 2))
+            
+            try:
+                self.wm_attributes('-alpha', eased_alpha)
+            except tk.TclError:
+                # 窗口可能在动画过程中被关闭
+                return
+            
+            self.after(self.animation_step_delay, self._fade_in_step)
+    # ##################################################################
+    # ######################## 结束新增动画代码 ##########################
+    # ##################################################################
 
     def _create_strength_chart(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -558,6 +630,14 @@ class PokerApp(tk.Tk):
     # (PokerApp 类的 __init__, _configure_styles, _create_widgets 等方法)
     def __init__(self, poker_logic):
         super().__init__()
+        
+        # ##################################################################
+        # ###################### 新增: 入场动画 - 步骤 1 #####################
+        # ##################################################################
+        # 启动时将窗口设置为完全透明
+        self.wm_attributes('-alpha', 0.0)
+        # ##################################################################
+
         self.poker_logic = poker_logic
         self.title("德州扑克分析工具")
         window_width = 1370
@@ -606,6 +686,13 @@ class PokerApp(tk.Tk):
         # ###################### 新增: 绑定键盘移动事件 ######################
         # ##################################################################
         self.bind_all('<KeyPress>', self._handle_window_movement)
+        
+        # ##################################################################
+        # ###################### 新增: 入场动画 - 步骤 3 #####################
+        # ##################################################################
+        # 在所有控件加载完毕后，开始执行淡入动画
+        # 使用 self.after(10, ...) 确保在主循环开始后立即执行
+        self.after(10, self._start_fade_in)
 
     # ##################################################################
     # ####################### 修改: 窗口移动事件处理函数 ###############
@@ -642,7 +729,7 @@ class PokerApp(tk.Tk):
         self.geometry(f"+{x}+{y}")
 
     # ##################################################################
-    # ################# 新增: 打开图表窗口的专用函数 ###################
+    # ################# 关键修改: 打开图表窗口的函数 ###################
     # ##################################################################
     def _open_strength_chart(self):
         """打开或激活起手牌强度图表窗口"""
@@ -652,8 +739,68 @@ class PokerApp(tk.Tk):
             self.strength_chart_window.focus_force()
             return
         
+        # ##################################################################
+        # ################ 关键修改：禁用按钮防止重复点击 #################
+        # ##################################################################
+        self.open_chart_button.config(state='disabled')
+        
         # 创建新窗口实例并保存引用
         self.strength_chart_window = StrengthChartWindow(self)
+
+    # ##################################################################
+    # ###################### 关键修改: 缓动动画逻辑 ####################
+    # ##################################################################
+    def _start_fade_in(self):
+        """(辅助函数) 初始化并启动淡入动画"""
+        # 定义动画参数
+        self.animation_total_duration = 300  # 总毫秒数 (0.3秒)
+        self.animation_step_delay = 15       # 每一步的毫秒数 (约66 FPS)
+        
+        # 计算总步数和每一步的“进度”增量
+        try:
+            total_steps = self.animation_total_duration / self.animation_step_delay
+        except ZeroDivisionError:
+            total_steps = 0 # 避免除以零错误
+
+        if total_steps == 0:
+            self.wm_attributes('-alpha', 1.0)
+            return
+            
+        # 这是“进度” (progress) 增量, 从 0.0 到 1.0
+        self.progress_increment = 1.0 / total_steps
+        self.current_progress = 0.0
+        
+        # 开始动画循环
+        self._fade_in_step()
+
+    def _fade_in_step(self):
+        """(辅助函数) 执行淡入动画的单一步骤"""
+        self.current_progress += self.progress_increment
+        
+        if self.current_progress >= 1.0:
+            self.wm_attributes('-alpha', 1.0) # 确保最终为 1.0
+        else:
+            # ########################################################
+            # ############### 这是关键的缓动（Ease-Out）逻辑 ##########
+            # ########################################################
+            # 使用 math.sin(progress * math.pi / 2) 来创建缓出效果
+            # 当 self.current_progress 从 0.0 变为 1.0, 
+            # eased_alpha 会从 sin(0) = 0.0 平滑地变为 sin(pi/2) = 1.0
+            eased_alpha = math.sin(self.current_progress * (math.pi / 2))
+            
+            try:
+                self.wm_attributes('-alpha', eased_alpha)
+            except tk.TclError:
+                # 窗口可能在动画过程中被关闭
+                return
+            
+            # ########################################################
+            
+            # 安排下一步
+            self.after(self.animation_step_delay, self._fade_in_step)
+    # ##################################################################
+    # ######################## 结束修改动画代码 ##########################
+    # ##################################################################
 
     def _configure_styles(self):
         # --- 全局和通用组件样式 ---
@@ -747,9 +894,10 @@ class PokerApp(tk.Tk):
         ttk.Button(action_frame, text="清空全部", command=self.clear_all).pack(fill='x', ipady=10, pady=5)
         
         # ##################################################################
-        # ################ 修改: 按钮命令指向新函数 ######################
+        # ################ 关键修改: 保存按钮引用 ######################
         # ##################################################################
-        ttk.Button(parent_pane, text="查看起手牌强度图表", command=self._open_strength_chart).pack(side='bottom', fill='x', ipady=10, pady=5)
+        self.open_chart_button = ttk.Button(parent_pane, text="查看起手牌强度图表", command=self._open_strength_chart)
+        self.open_chart_button.pack(side='bottom', fill='x', ipady=10, pady=5)
 
     def _create_analysis_pane(self, parent_pane):
         parent_pane.rowconfigure(1, weight=1)
