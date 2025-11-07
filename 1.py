@@ -250,7 +250,7 @@ class PokerLogic:
                     # treys.Card.int_to_str(c) 可以将 131828 (As) 转换回 "As"
                     card_str = Card.int_to_str(conflicting_card)
                     hand_str = [Card.int_to_str(c) for c in hand]
-                    raise ValueError(f"{player_name} 冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+                    raise ValueError(f"{player_name} 内部冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
             
             # 如果没有冲突，将所有手牌添加到集合中
             for hand in hand_list:
@@ -312,21 +312,33 @@ class PokerLogic:
             # (V9) 捕获所有解析和冲突错误
             raise ValueError(f"输入解析错误: {e}")
 
-        # --- (V9) 步骤 3：并行计算设置 (与 V8 相同) ---
+        # --- (V9) 步骤 3：并行计算设置 (V9-Fix 进度条) ---
         try:
             num_cores = max(1, multiprocessing.cpu_count() - 1)
         except NotImplementedError:
             num_cores = 1
             
-        MIN_SIMS_PER_CHUNK = 1000 
+        # ##################################################################
+        # ############### V9-Fix: 优化进度条平滑度 #######################
+        # ##################################################################
+        #
+        # 新逻辑: 任务数与核心数解耦。
+        # 目标是创建~100个小任务块, 以便进度条能平滑更新100次。
+        
+        TARGET_SMOOTHNESS_TASKS = 100  # 目标更新100次
+
         if num_simulations <= 0:
             num_tasks, chunk_size, remainder = 0, 0, 0
         else:
-            num_tasks = max(num_cores, num_simulations // MIN_SIMS_PER_CHUNK)
-            if num_simulations < num_tasks:
-                num_tasks = num_simulations 
+            # 目标是 100 个任务块，但任务数不能超过总模拟数
+            num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
+            
             chunk_size = num_simulations // num_tasks
             remainder = num_simulations % num_tasks
+        
+        # ##################################################################
+        # ###################### 结束修改 #################################
+        # ##################################################################
         
         tasks = []
         master_deck_cards = list(self.master_deck.cards)
