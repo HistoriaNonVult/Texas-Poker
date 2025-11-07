@@ -23,7 +23,8 @@ def _run_simulation_chunk(args):
     这个函数是独立的，以便被其他进程调用。
     """
     # 解包传入的参数
-    p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards = args
+    # (V10) 增加了 calculate_p1_strength 参数
+    p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards, calculate_p1_strength = args
 
     evaluator = Evaluator() # 每个进程都需要创建自己的Evaluator实例
     rank_class_to_string_map = {
@@ -36,7 +37,7 @@ def _run_simulation_chunk(args):
     p1_wins, p2_wins, ties = 0, 0, 0
     p1_hand_strength_counts = defaultdict(int)
     valid_sims = 0
-    calculate_p1_strength = p1_type != 'random'
+    # (V10) calculate_p1_strength = p1_type != 'random' # <-- 已删除, 从参数传入
 
     # 在循环外创建一次牌库，并移除已知的公共牌
     base_deck = list(master_deck_cards)
@@ -75,6 +76,7 @@ def _run_simulation_chunk(args):
         p1_score = evaluator.evaluate(run_board, p1_hand_sample)
         p2_score = evaluator.evaluate(run_board, p2_hand_sample)
 
+        # (V10) 现在这个 if 总是为 True
         if calculate_p1_strength:
             p1_rank_class = evaluator.get_rank_class(p1_score)
             if p1_rank_class in rank_class_to_string_map:
@@ -231,7 +233,7 @@ class PokerLogic:
             return 'range', final_hands_list
             
     # ##################################################################
-    # ############### V9：重写 run_analysis (健壮的冲突检测) ###########
+    # ############### V10：重写 run_analysis #########################
     # ##################################################################
     def run_analysis(self, p1_input_raw, p2_input_raw, board_str, num_simulations=50000, progress_callback=None):
         
@@ -283,7 +285,10 @@ class PokerLogic:
             p1_type, p1_hands = self._determine_input_type(p1_input_raw)
             p2_type, p2_hands = self._determine_input_type(p2_input_raw)
             
-            calculate_p1_strength = p1_type != 'random'
+            # ##################################################################
+            # ############### V10 修改：始终计算 P1 牌力 #####################
+            # ##################################################################
+            calculate_p1_strength = True # 原: p1_type != 'random'
 
             # --- (V9) 步骤 2：健壮的冲突检测 ---
             
@@ -321,9 +326,6 @@ class PokerLogic:
         # ##################################################################
         # ############### V9-Fix: 优化进度条平滑度 #######################
         # ##################################################################
-        #
-        # 新逻辑: 任务数与核心数解耦。
-        # 目标是创建~100个小任务块, 以便进度条能平滑更新100次。
         
         TARGET_SMOOTHNESS_TASKS = 100  # 目标更新100次
 
@@ -342,12 +344,15 @@ class PokerLogic:
         
         tasks = []
         master_deck_cards = list(self.master_deck.cards)
-        base_args = (p1_type, p1_hands, p2_type, p2_hands, board, master_deck_cards)
+        # (V10) 将 calculate_p1_strength (现在总是 True) 添加到基础参数中
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, board, master_deck_cards, calculate_p1_strength)
 
         for _ in range(num_tasks):
             if chunk_size > 0:
+                # (V10) 调整元组索引
                 tasks.append(base_args[:5] + (chunk_size,) + base_args[5:])
         if remainder > 0:
+            # (V10) 调整元组索引
             tasks.append(base_args[:5] + (remainder,) + base_args[5:])
 
         total_p1_wins, total_p2_wins, total_ties = 0, 0, 0
@@ -378,7 +383,7 @@ class PokerLogic:
             if num_simulations > 0:
                 raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
         
-        # --- (V9) 步骤 5：汇总结果 (与 V8 相同) ---
+        # --- (V9) 步骤 5：汇总结果 (V10 修改) ---
         equity_results = {'p1_win': 0, 'p2_win': 0, 'tie': 0}
         if total_valid_sims > 0:
             equity_results = {
@@ -388,6 +393,7 @@ class PokerLogic:
             }
             
         strength_results = {}
+        # (V10) 现在这个 if 总是为 True
         if calculate_p1_strength:
             total_strength_hands = sum(total_p1_strength_counts.values())
             if total_strength_hands > 0:
@@ -396,6 +402,7 @@ class PokerLogic:
                     prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
                     strength_results[hand_type] = prob
         
+        # (V10) calculate_p1_strength 现在总是 True
         return equity_results, strength_results, calculate_p1_strength
 
 
@@ -2035,12 +2042,14 @@ class PokerApp(tk.Tk):
                     # 确保进度条在计算完成后显示为100%
                     self.progress_var.set(self.analysis_progress_bar['maximum'])
 
+                # (V10) show_strength 现在总是 True
                 if show_strength:
                     hand_rank_order = {v: k for k, v in self.poker_logic.rank_class_to_string_map.items()}
                     all_hand_types = sorted(hand_rank_order.keys(), key=lambda x: hand_rank_order[x])
                     for hand_name in all_hand_types:
                         prob = strength.get(hand_name, 0.0)
                         if prob > 1e-5: self.strength_tree.insert('', tk.END, values=(hand_name, f"{prob:.2f}%"))
+                # (V10) 这个 else 永远不会被触发了，但保留也无妨
                 else:
                     self.strength_tree.insert('', tk.END, values=("(请输入玩家1手牌/范围)", "N/A"))
             except Exception as e:
