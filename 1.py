@@ -100,7 +100,6 @@ class PokerLogic:
         }
         self.master_deck = Deck()
 
-    # (其他 _parse_hand_range, _split_hand_str, _determine_input_type 方法保持不变)
     def _parse_hand_range(self, range_str_list):
         hand_pairs = []
         for r_str in filter(None, [s.strip().upper() for s in range_str_list]):
@@ -142,108 +141,200 @@ class PokerLogic:
         return hand_pairs
 
     def _split_hand_str(self, s):
-        return [s[i:i+2] for i in range(0, len(s), 2)]
+        cards_raw = [s[i:i+2] for i in range(0, len(s), 2)] # ["AS", "AH"]
+        formatted_cards = []
+        for card in cards_raw:
+            if len(card) == 2:
+                formatted_cards.append(card[0].upper() + card[1].lower())
+            else:
+                formatted_cards.append(card) 
+        return formatted_cards # 返回 ["As", "Ah"]
 
+    # ##################################################################
+    # ############### V9：修改: _determine_input_type ##################
+    # ############### (添加了内部冲突检测) #########################
+    # ##################################################################
     def _determine_input_type(self, p_input):
+        # (V9) p_input 现在是 [s.strip().upper() ...], 但我们在这里再次清理以防万一
         clean_input = [s.strip().upper() for s in p_input if s.strip()]
         if not clean_input or clean_input == ['']:
             return 'random', None
-        if len(clean_input) == 1 and len(clean_input[0]) == 4 and all(c in '23456789TJQKA' or c in 'SHDC' for c in clean_input[0]):
+
+        all_hand_pairs = []
+        specific_hands_in_list = set()
+        range_strings = []
+
+        for item in clean_input:
+            if len(item) == 4:
+                try:
+                    # 验证它是否是一个有效的特定手牌
+                    r1 = item[0].upper()
+                    s1 = item[1].lower()
+                    r2 = item[2].upper()
+                    s2 = item[3].lower()
+                    c1 = Card.new(r1 + s1) # e.g., Card.new("As")
+                    c2 = Card.new(r2 + s2) # e.g., Card.new("Ah")
+                    
+                    # (V9) 关键：立即检查手牌内部冲突 (e.g., "AHAH")
+                    if c1 == c2:
+                        raise ValueError(f"手牌 '{item}' 包含重复的牌。")
+                        
+                    specific_hands_in_list.add(item)
+                except (ValueError, KeyError):
+                    # 不是有效的4字符手牌 (e.g., "ASKA")，当作范围处理
+                    range_strings.append(item)
+            else:
+                range_strings.append(item)
+        
+        # 1. 解析所有特定的手牌
+        for hand_str in specific_hands_in_list:
             try:
-                hand_str = clean_input[0]
                 cards = self._split_hand_str(hand_str)
                 hand = [Card.new(c) for c in cards]
-                if len(set(hand)) != 2: raise ValueError(f"手牌包含重复的牌: {hand_str}")
-                return 'hand', [hand]
-            except ValueError as e:
-                raise ValueError(f"无效的手牌字符串: {clean_input[0]} ({e})")
+                # (V9) 这里的 set 检查是多余的，因为上面已经检查过了，但保留也无妨
+                if len(set(hand)) != 2:
+                    raise ValueError(f"手牌 '{hand_str}' 包含重复的牌。")
+                all_hand_pairs.append(hand)
+            except (ValueError, KeyError) as e:
+                # (V9) 将错误冒泡
+                raise ValueError(f"解析特定手牌 '{hand_str}' 时出错: {e}")
+                
+        # 2. 解析所有范围字符串
+        if range_strings:
+            try:
+                all_hand_pairs.extend(self._parse_hand_range(range_strings))
+            except Exception as e:
+                # _parse_hand_range 内部已经有打印警告，这里防止崩溃
+                print(f"解析范围时出错: {e}")
+
+        if not all_hand_pairs:
+            # (V9) 如果特定手牌和范围都为空或无效
+            if specific_hands_in_list or range_strings:
+                 raise ValueError("无法从输入解析出任何有效手牌。")
+            else:
+                 # 这是 'random' 的情况 (e.g., 输入是 [''])
+                 return 'random', None
+
+        # 3. 去重
+        deduped_set = {tuple(sorted(h)) for h in all_hand_pairs}
+        final_hands_list = [list(t) for t in deduped_set]
+        
+        if not final_hands_list: 
+            raise ValueError("无法解析手牌范围或特定手牌。")
+            
+        # (V9) 决定返回类型
+        # 如果去重后只剩一手牌，并且没有范围字符串，则视为 'hand' 类型
+        if len(final_hands_list) == 1 and not range_strings:
+             return 'hand', final_hands_list
         else:
-            parsed_hands = self._parse_hand_range(clean_input)
-            if not parsed_hands: raise ValueError("无法解析手牌范围")
-            return 'range', parsed_hands
+            # 否则，视为 'range' 类型
+            return 'range', final_hands_list
             
     # ##################################################################
-    # ############### 重写 run_analysis 为任务分发器 ####################
+    # ############### V9：重写 run_analysis (健壮的冲突检测) ###########
     # ##################################################################
     def run_analysis(self, p1_input_raw, p2_input_raw, board_str, num_simulations=50000, progress_callback=None):
+        
+        # (V9) 辅助函数，用于检查手牌列表与一个“已见卡牌”集合的冲突
+        def check_hand_list(hand_list, seen_cards_set, player_name):
+            """
+            检查手牌列表中的每一张牌是否已在 seen_cards_set 中。
+            如果冲突，则抛出 ValueError。
+            如果不冲突，则将这些牌添加到 seen_cards_set 中。
+            """
+            for hand in hand_list:
+                hand_set = set(hand)
+                if not hand_set.isdisjoint(seen_cards_set):
+                    # 找到冲突的牌
+                    conflicting_card = (hand_set & seen_cards_set).pop()
+                    # treys.Card.int_to_str(c) 可以将 131828 (As) 转换回 "As"
+                    card_str = Card.int_to_str(conflicting_card)
+                    hand_str = [Card.int_to_str(c) for c in hand]
+                    raise ValueError(f"{player_name} 冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+            
+            # 如果没有冲突，将所有手牌添加到集合中
+            for hand in hand_list:
+                seen_cards_set.update(hand)
+
+        # (V9) 辅助函数，用于从范围列表中过滤掉与“已见卡牌”冲突的手牌
+        def filter_range(hand_list, seen_cards_set, player_name):
+            """
+            过滤手牌列表，移除任何与 seen_cards_set 冲突的手牌。
+            """
+            valid_hands = []
+            for hand in hand_list:
+                if set(hand).isdisjoint(seen_cards_set):
+                    valid_hands.append(hand)
+            
+            if not valid_hands and hand_list: # 如果列表本来有牌，但全被过滤了
+                raise ValueError(f"{player_name} 的范围与已选卡牌完全冲突。")
+                
+            return valid_hands
+
         try:
-            # 所有的输入解析和冲突检查代码保持完全不变
+            # --- (V9) 步骤 1：解析所有输入 ---
+            
+            # 解析公共牌
             board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
-            if len(set(board)) != len(board): raise ValueError("公共牌中包含重复的牌。")
-            board_set = set(board)
+            if len(set(board)) != len(board): 
+                raise ValueError("公共牌中包含重复的牌。")
+            
+            # 解析 P1 和 P2
             p1_type, p1_hands = self._determine_input_type(p1_input_raw)
             p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            
             calculate_p1_strength = p1_type != 'random'
-            if p1_type == 'hand' and not board_set.isdisjoint(p1_hands[0]): raise ValueError("玩家1的手牌与公共牌冲突。")
-            if p2_type == 'hand' and not board_set.isdisjoint(p2_hands[0]): raise ValueError("玩家2的手牌与公共牌冲突。")
-            if p1_type == 'range':
-                p1_hands = [h for h in p1_hands if board_set.isdisjoint(h)]
-                if not p1_hands: raise ValueError("玩家1的范围与公共牌完全冲突。")
-            if p2_type == 'range':
-                p2_hands = [h for h in p2_hands if board_set.isdisjoint(h)]
-                if not p2_hands: raise ValueError("玩家2的范围与公共牌完全冲突。")
-            if p1_type == 'hand' and p2_type == 'hand' and not set(p1_hands[0]).isdisjoint(p2_hands[0]):
-                raise ValueError("玩家1和玩家2的手牌存在冲突。")
-            elif p1_type == 'hand' and p2_type == 'range':
-                p1_hand_set = set(p1_hands[0])
-                p2_hands = [h for h in p2_hands if p1_hand_set.isdisjoint(h)]
-                if not p2_hands: raise ValueError("玩家2的范围与玩家1的手牌完全冲突。")
-            elif p2_type == 'hand' and p1_type == 'range':
-                p2_hand_set = set(p2_hands[0])
-                p1_hands = [h for h in p1_hands if p2_hand_set.isdisjoint(h)]
-                if not p1_hands: raise ValueError("玩家1的范围与玩家2的手牌完全冲突。")
+
+            # --- (V9) 步骤 2：健壮的冲突检测 ---
+            
+            # 全局“已见卡牌”集合
+            seen_cards = set(board)
+
+            # 检查 P1
+            if p1_type == 'hand':
+                # 'hand' 类型意味着列表只有一手牌。我们必须检查它。
+                check_hand_list(p1_hands, seen_cards, "玩家1")
+            elif p1_type == 'range':
+                # 'range' 类型意味着列表有多手牌。我们必须过滤它。
+                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+                # *不* 将 P1 范围添加到 seen_cards，因为 P2 的范围不应该与 P1 的范围冲突
+                # 它们只在模拟运行时才会动态冲突
+
+            # 检查 P2
+            if p2_type == 'hand':
+                # 'hand' 类型必须检查
+                check_hand_list(p2_hands, seen_cards, "玩家2")
+            elif p2_type == 'range':
+                # 'range' 类型必须过滤
+                p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+
         except ValueError as e:
+            # (V9) 捕获所有解析和冲突错误
             raise ValueError(f"输入解析错误: {e}")
 
-        # --- 并行计算设置 ---
+        # --- (V9) 步骤 3：并行计算设置 (与 V8 相同) ---
         try:
             num_cores = max(1, multiprocessing.cpu_count() - 1)
         except NotImplementedError:
             num_cores = 1
             
-        # ##################################################################
-        # ############### 关键修改：平滑进度条逻辑 ######################
-        # ##################################################################
-        #
-        # 为了让进度条更平滑（而不是“跳跃”），我们创建更多、更小的任务块。
-        # 原始逻辑：任务数 = 核心数 (num_cores)
-        # 新逻辑：任务数 = max(核心数, 模拟总数 / 1000)
-        # 这样可以确保至少每 1000 次模拟更新一次进度条，同时充分利用所有核心。
-        
-        MIN_SIMS_PER_CHUNK = 1000  # 目标：大约每1000次模拟更新一次
-
-        # 计算任务数：至少是核心数，但如果模拟总数多，就增加任务数
+        MIN_SIMS_PER_CHUNK = 1000 
         if num_simulations <= 0:
-            num_tasks = 0
-            chunk_size = 0
-            remainder = 0
+            num_tasks, chunk_size, remainder = 0, 0, 0
         else:
-            # 基础任务数至少为核心数
             num_tasks = max(num_cores, num_simulations // MIN_SIMS_PER_CHUNK)
-            # 但如果模拟总数太少（例如 500），任务数不能超过模拟数
             if num_simulations < num_tasks:
-                num_tasks = num_simulations # 此时 chunk_size 将为 1
-            
+                num_tasks = num_simulations 
             chunk_size = num_simulations // num_tasks
             remainder = num_simulations % num_tasks
         
-        # ##################################################################
-        # ###################### 结束修改 #################################
-        # ##################################################################
-
         tasks = []
         master_deck_cards = list(self.master_deck.cards)
-        
-        # 基础参数（不包含变化的 chunk_size）
         base_args = (p1_type, p1_hands, p2_type, p2_hands, board, master_deck_cards)
 
-        # 创建任务列表
         for _ in range(num_tasks):
             if chunk_size > 0:
-                # 插入 chunk_size 到正确的位置
                 tasks.append(base_args[:5] + (chunk_size,) + base_args[5:])
-        
-        # 处理余数
         if remainder > 0:
             tasks.append(base_args[:5] + (remainder,) + base_args[5:])
 
@@ -251,15 +342,12 @@ class PokerLogic:
         total_p1_strength_counts = defaultdict(int)
         total_valid_sims = 0
         
-        # 创建进程池并执行任务
+        # --- (V9) 步骤 4：执行 (与 V8 相同) ---
         with multiprocessing.Pool(processes=num_cores) as pool:
-            # 使用 imap_unordered 来获取中间进度
             completed_sims = 0
-            # 这里的 tasks 列表现在可能包含很多任务，所以回调会更频繁
             for result_chunk in pool.imap_unordered(_run_simulation_chunk, tasks):
                 p1_wins, p2_wins, ties, p1_strength_counts, valid_sims = result_chunk
                 
-                # 汇总这一块的结果
                 total_p1_wins += p1_wins
                 total_p2_wins += p2_wins
                 total_ties += ties
@@ -267,24 +355,18 @@ class PokerLogic:
                     total_p1_strength_counts[hand] += count
                 total_valid_sims += valid_sims
                 
-                # 更新进度条
                 if progress_callback:
-                    # 注意：这里我们累加的是 'valid_sims'，因为这才是
-                    # 真正完成的模拟次数，而不是任务块的理论大小(chunk_size)
                     completed_sims += valid_sims
                     progress_callback(completed_sims)
 
-        # 确保进度条最后能达到100%
         if progress_callback: 
             progress_callback(num_simulations)
             
         if total_valid_sims == 0: 
-            # 即使 num_simulations > 0, 也可能因为输入冲突导致 valid_sims=0
             if num_simulations > 0:
                 raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
-            # 如果 num_simulations=0，则不报错，正常返回空结果
         
-        # --- 后续的 equity 和 strength 结果计算 ---
+        # --- (V9) 步骤 5：汇总结果 (与 V8 相同) ---
         equity_results = {'p1_win': 0, 'p2_win': 0, 'tie': 0}
         if total_valid_sims > 0:
             equity_results = {
@@ -303,6 +385,410 @@ class PokerLogic:
                     strength_results[hand_type] = prob
         
         return equity_results, strength_results, calculate_p1_strength
+
+
+# ##################################################################
+# ############### V8：花色选择器弹出窗口 (对子独立) ##################
+# ##################################################################
+class SuitSelectorWindow(tk.Toplevel):
+    """
+    一个弹出窗口，用于为特定的手牌类别（如 'AKs', 'T9o', 'AA'）选择具体花色。
+    V8: 将对子(Pair)的选择逻辑改为与Offsuit一致，允许独立选择 '未知'。
+    """
+    def __init__(self, master, hand_text, callback):
+        super().__init__(master)
+        
+        self.hand_text = hand_text
+        self.callback = callback
+        self.hand_type = None
+        self.rank1 = hand_text[0]
+        self.rank2 = hand_text[1]
+
+        # (V7) 尝试设置图标
+        try:
+            self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+        except tk.TclError:
+            print("警告: 找不到图标文件 'TexasPoker.ico'。将使用默认图标。")
+        
+        # --- (V7) 字体定义 ---
+        self.FONT_STATUS = ("Microsoft YaHei", 16, "bold") # 状态标签
+        self.FONT_SYMBOL = ("Microsoft YaHei", 24, "bold") # 按钮上的 ♠, ♥, ?
+        self.FONT_LABEL = ("Microsoft YaHei", 12)          # "牌 1 (A):"
+        self.FONT_PROMPT = ("Microsoft YaHei", 14)         # "为 ... 选择花色:"
+        self.FONT_SELECTED = ("Microsoft YaHei", 14, "italic") # "已选: -"
+        
+        # --- 颜色主题 (V6) ---
+        self.BG_COLOR = '#2e2e2e'
+        self.BTN_BG_NORMAL = '#4a4a4a'
+        self.BTN_FG_NORMAL = 'white'
+        self.BTN_BG_HOVER = '#6a6a6a'
+        self.BTN_BG_DISABLED = '#3a3a3a'
+        self.BTN_FG_DISABLED = '#5c5c5c' # 禁用的花色
+        self.BTN_BG_SELECTED = '#007bff' # P1 Color
+        self.BTN_BORDER_SELECTED = '#80bfff'
+        self.LABEL_FG = '#d0d0d0'
+
+        # 1. 判断手牌类型
+        # (V8) 修改：'pair' 现在使用和 'offsuit' 一样的选择逻辑
+        if hand_text.endswith('s'):
+            self.hand_type = 'suited'
+            self.title(f"选择 {hand_text} 花色")
+            self.selection = [] # 存储1个花色, e.g., ['s']
+        else:
+            # (V8) 'pair' (e.g. "AA") 和 'offsuit' (e.g. "AKo") 都走这里
+            self.hand_type = 'pair' if self.rank1 == self.rank2 else 'offsuit'
+            self.title(f"选择 {hand_text} 花色")
+            self.selection = [None, None] # 存储2个花色
+
+        # 2. 窗口配置
+        self.configure(bg=self.BG_COLOR)
+        self.transient(master)
+        self.grab_set()
+        self.resizable(False, False)
+        
+        master_x = master.winfo_x()
+        master_y = master.winfo_y()
+        master_w = master.winfo_width()
+        master_h = master.winfo_height()
+        win_w, win_h = 580, 350 
+        pos_x = master_x + (master_w // 2) - (win_w // 2)
+        pos_y = master_y + (master_h // 2) - (win_h // 2)
+        self.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+
+        # 3. 创建控件
+        main_frame = ttk.Frame(self, padding="20") 
+        main_frame.pack(fill='both', expand=True)
+        
+        self.status_var = tk.StringVar()
+        ttk.Label(main_frame, textvariable=self.status_var, font=self.FONT_STATUS, anchor='center').pack(pady=(0, 20), fill='x')
+        
+        self.selection_frame = ttk.Frame(main_frame)
+        self.selection_frame.pack(fill='x', expand=True, pady=5)
+
+        self.buttons_r1 = {}
+        self.buttons_r2 = {}
+        
+        self.suits_map_display = {'s': ('♠', 'black'), 'h': ('♥', 'red'), 'd': ('♦', 'blue'), 'c': ('♣', 'green')}
+        self.button_key_list = ['s', 'h', 'd', 'c', 'unknown'] 
+        
+        # --- (V7) 自定义花色按钮创建函数 ---
+        def create_suit_button(parent, suit_key, command_func, state='normal'):
+            if suit_key == 'unknown':
+                disp, color = '?', self.LABEL_FG
+            else:
+                disp, color = self.suits_map_display[suit_key]
+
+            btn = tk.Label(parent, text=disp, font=self.FONT_SYMBOL, 
+                           fg=color, bg=self.BTN_BG_NORMAL,
+                           width=3, height=1, relief='raised', borderwidth=2)
+            btn.suit_key = suit_key
+            
+            def on_click(e):
+                if btn['state'] == 'normal':
+                    command_func(btn.suit_key) 
+            
+            def on_enter(e):
+                if btn['state'] == 'normal':
+                    btn.config(bg=self.BTN_BG_HOVER)
+            
+            def on_leave(e):
+                if btn['state'] == 'normal':
+                    is_selected = False
+                    # (V8) 修改：检查 'offsuit' 和 'pair'
+                    if self.hand_type in ['offsuit', 'pair'] and self.selection:
+                        is_selected = (btn.suit_key == self.selection[0]) or (btn.suit_key == self.selection[1])
+                    
+                    if not is_selected:
+                        btn.config(bg=self.BTN_BG_NORMAL)
+            
+            btn.bind("<Button-1>", on_click)
+            btn.bind("<Enter>", on_enter)
+            btn.bind("<Leave>", on_leave)
+            
+            if state == 'disabled':
+                btn.config(state='disabled', fg=self.BTN_FG_DISABLED, bg=self.BTN_BG_DISABLED, relief='flat')
+            
+            return btn
+
+        # (V8) --- 布局逻辑修改 ---
+        if self.hand_type == 'offsuit' or self.hand_type == 'pair':
+            # (V8) Offsuit 和 Pair 共享此布局
+            
+            # (V8) 决定 R1 和 R2 的点击回调
+            r1_cmd = self._on_r1_click if self.hand_type == 'offsuit' else self._on_pair_r1_click
+            r2_cmd = self._on_r2_click if self.hand_type == 'offsuit' else self._on_pair_r2_click
+            
+            frame_r1 = ttk.Frame(self.selection_frame)
+            frame_r1.pack(pady=5, fill='x')
+            ttk.Label(frame_r1, text=f"牌 1 ({self.rank1}):", font=self.FONT_LABEL, foreground=self.LABEL_FG, width=10).pack(side='left', padx=(10, 10))
+            for key in self.button_key_list:
+                btn = create_suit_button(frame_r1, key, r1_cmd) 
+                btn.pack(side='left', padx=6, pady=4)
+                self.buttons_r1[key] = btn
+
+            frame_r2 = ttk.Frame(self.selection_frame)
+            frame_r2.pack(pady=5, fill='x')
+            # (V8) rank2 (对于对子来说，这与 rank1 相同)
+            ttk.Label(frame_r2, text=f"牌 2 ({self.rank2}):", font=self.FONT_LABEL, foreground=self.LABEL_FG, width=10).pack(side='left', padx=(10, 10))
+            for key in self.button_key_list:
+                btn = create_suit_button(frame_r2, key, r2_cmd, state='disabled') 
+                btn.pack(side='left', padx=6, pady=4)
+                self.buttons_r2[key] = btn
+        
+        elif self.hand_type == 'suited':
+            # --- Suited 布局 (不变) ---
+            prompt = f"为 {self.rank1}{self.rank2}s 选择花色:"
+            ttk.Label(self.selection_frame, text=prompt, font=self.FONT_PROMPT, foreground=self.LABEL_FG, anchor='center').pack(pady=10, fill='x')
+            
+            button_frame = ttk.Frame(self.selection_frame)
+            button_frame.pack(pady=10) 
+            for key in self.button_key_list:
+                # (V8) 移除 'pair' 的回调
+                btn = create_suit_button(button_frame, key, self._on_suited_click) 
+                btn.pack(side='left', padx=8, pady=5)
+                self.buttons_r1[key] = btn 
+
+        # 实时选择显示标签
+        self.selection_label_var = tk.StringVar(value="已选: -")
+        ttk.Label(main_frame, textvariable=self.selection_label_var, font=self.FONT_SELECTED, foreground='#ccc', anchor='center').pack(pady=(15, 0), fill='x')
+
+        # 底部控制按钮 - 只有重置
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(side='bottom', fill='x', pady=(20, 0))
+        
+        ttk.Button(control_frame, text="重置", 
+                   command=self._reset).pack(fill='x', expand=True, padx=10, ipady=10)
+                   
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self._update_status_label() 
+
+    def _update_status_label(self):
+        """(V8) 更新顶部的提示标签 (Pair 逻辑合并)"""
+        suits_map = self.suits_map_display 
+
+        # (V8) Offsuit 和 Pair 逻辑现在相同
+        if self.hand_type == 'offsuit' or self.hand_type == 'pair':
+            s1 = self.selection[0]
+            if s1 is None:
+                self.status_var.set(f"请为 {self.rank1} 选择花色")
+                self.selection_label_var.set("已选: -")
+            else:
+                s1_disp = '?' if s1 == 'unknown' else suits_map[s1][0]
+                self.status_var.set(f"请为 {self.rank2} 选择花色")
+                self.selection_label_var.set(f"已选: {self.rank1}{s1_disp}")
+        
+        elif self.hand_type == 'suited':
+            self.status_var.set(f"请为 {self.hand_text} 选择 1 种花色")
+            self.selection_label_var.set("已选: -")
+            
+        # (V8) 旧的 'pair' 逻辑已移除
+
+    def _enable_r2_buttons(self, r1_key_char):
+        """(V8) 辅助函数：启用 R2 按钮"""
+        for key, btn in self.buttons_r2.items():
+            # 逻辑：
+            # 如果 R1 是 'unknown', R2 可以是任何牌 (包括 'unknown')
+            # 如果 R1 是 's', R2 不能是 's'
+            is_disabled = (r1_key_char != 'unknown' and key == r1_key_char)
+
+            if is_disabled:
+                btn.config(state='disabled', fg=self.BTN_FG_DISABLED, bg=self.BTN_BG_DISABLED, relief='flat')
+            else:
+                color = self.LABEL_FG if key == 'unknown' else self.suits_map_display[key][1]
+                btn.config(state='normal', fg=color, bg=self.BTN_BG_NORMAL, relief='raised')
+                btn.bind("<Enter>", btn.bindtags()[0], "+")
+                btn.bind("<Leave>", btn.bindtags()[0], "+")
+
+    def _disable_all_r1_buttons(self, selected_key):
+        """(V8) 辅助函数：禁用 R1 按钮并高亮显示"""
+        for btn in self.buttons_r1.values():
+            btn.config(state='disabled', fg=self.BTN_FG_DISABLED, bg=self.BTN_BG_DISABLED, relief='flat')
+            btn.unbind("<Enter>")
+            btn.unbind("<Leave>")
+        # 高亮选中的 R1 按钮
+        self.buttons_r1[selected_key].config(bg=self.BTN_BG_SELECTED, relief='solid', borderwidth=2, highlightbackground=self.BTN_BORDER_SELECTED) 
+
+    def _disable_all_r2_buttons(self, selected_key):
+        """(V8) 辅助函数：禁用 R2 按钮并高亮显示"""
+        for btn in self.buttons_r2.values():
+            btn.config(state='disabled', fg=self.BTN_FG_DISABLED, bg=self.BTN_BG_DISABLED, relief='flat')
+            btn.unbind("<Enter>")
+            btn.unbind("<Leave>")
+        # 高亮选中的 R2 按钮
+        self.buttons_r2[selected_key].config(bg=self.BTN_BG_SELECTED, relief='solid', borderwidth=2, highlightbackground=self.BTN_BORDER_SELECTED) 
+
+    # --- (V8) 新增：对子(Pair)的点击事件 ---
+
+    def _on_pair_r1_click(self, key_char):
+        """(Pair) V8 - R1 点击，可处理 'unknown'"""
+        self.selection[0] = key_char
+        self._disable_all_r1_buttons(key_char)
+        self._enable_r2_buttons(key_char)
+        self._update_status_label()
+
+    def _on_pair_r2_click(self, key_char):
+        """(Pair) V8 - R2 点击，可处理 'unknown'。"""
+        self.selection[1] = key_char
+        self._disable_all_r2_buttons(key_char)
+        
+        s1, s2 = self.selection[0], self.selection[1]
+        
+        final_submission = None
+        all_suits = ['s', 'h', 'd', 'c']
+
+        if s1 != 'unknown' and s2 != 'unknown':
+            # Case 1: (suit, suit) -> e.g., "AsAh"
+            final_submission = f"{self.rank1}{s1}{self.rank1}{s2}".upper()
+            
+        elif s1 == 'unknown' and s2 == 'unknown':
+            # Case 2: (unknown, unknown) -> e.g., "AA"
+            final_submission = self.hand_text
+            
+        else:
+            # Case 3: (suit, unknown) or (unknown, suit) -> 部分范围
+            final_hands_list = []
+            
+            if s1 == 'unknown' and s2 != 'unknown':
+                # (A?, Ah)
+                for suit1 in all_suits:
+                    if suit1 == s2: continue 
+                    final_hands_list.append(f"{self.rank1}{suit1}{self.rank1}{s2}".upper())
+            
+            elif s1 != 'unknown' and s2 == 'unknown':
+                # (As, A?)
+                for suit2 in all_suits:
+                    if suit2 == s1: continue
+                    final_hands_list.append(f"{self.rank1}{s1}{self.rank1}{suit2}".upper())
+            
+            final_submission = ", ".join(final_hands_list)
+
+        self.callback(final_submission)
+        self.destroy()
+
+    # --- (V6) Offsuit 点击事件 (现在使用辅助函数) ---
+
+    def _on_r1_click(self, key_char):
+        """(Offsuit) V6 - R1 点击，可处理 'unknown'"""
+        self.selection[0] = key_char
+        self._disable_all_r1_buttons(key_char)
+        self._enable_r2_buttons(key_char)
+        self._update_status_label()
+
+    def _on_r2_click(self, key_char):
+        """(Offsuit) V6 - R2 点击，可处理 'unknown'。这是核心。"""
+        self.selection[1] = key_char
+        self._disable_all_r2_buttons(key_char)
+        
+        s1, s2 = self.selection[0], self.selection[1]
+        
+        # (V6) --- 决定回调内容 ---
+
+        final_submission = None
+        all_suits = ['s', 'h', 'd', 'c']
+
+        if s1 != 'unknown' and s2 != 'unknown':
+            # Case 1: (suit, suit) -> e.g., "AsKh"
+            final_submission = f"{self.rank1}{s1}{self.rank2}{s2}".upper()
+            
+        elif s1 == 'unknown' and s2 == 'unknown':
+            # Case 2: (unknown, unknown) -> e.g., "AKo"
+            final_submission = self.hand_text
+            
+        else:
+            # Case 3: (suit, unknown) or (unknown, suit) -> 部分范围
+            # e.g., AsK? -> "ASKH, ASKD, ASKC"
+            # e.g., A?Ks -> "AHKS, ADKS, ACKS"
+            
+            final_hands_list = []
+            
+            if s1 == 'unknown' and s2 != 'unknown':
+                # (A?, Ks)
+                for suit1 in all_suits:
+                    if suit1 == s2: 
+                        continue # 跳过同花 (e.g., AsKs)
+                    final_hands_list.append(f"{self.rank1}{suit1}{self.rank2}{s2}".upper())
+            
+            elif s1 != 'unknown' and s2 == 'unknown':
+                # (As, K?)
+                for suit2 in all_suits:
+                    if suit2 == s1: 
+                        continue # 跳过同花 (e.g., AsKs)
+                    final_hands_list.append(f"{self.rank1}{s1}{self.rank2}{suit2}".upper())
+            
+            final_submission = ", ".join(final_hands_list)
+
+        # 提交结果
+        self.callback(final_submission)
+        self.destroy()
+
+    # --- (V6) Suited 点击事件 (不变) ---
+
+    def _on_suited_click(self, key_char):
+        """(Suited) V6 - 处理花色点击"""
+        if key_char == 'unknown':
+            # (V6) 用户点击了 '?', 提交原始范围
+            self.callback(self.hand_text) # e.g., "AKs"
+            self.destroy()
+            return
+
+        self.selection.append(key_char)
+        # 禁用所有按钮
+        for btn in self.buttons_r1.values():
+            btn.config(state='disabled', fg=self.BTN_FG_DISABLED, bg=self.BTN_BG_DISABLED, relief='flat')
+            btn.unbind("<Enter>")
+            btn.unbind("<Leave>")
+        # 高亮选中的
+        self.buttons_r1[key_char].config(bg=self.BTN_BG_SELECTED, relief='solid', borderwidth=2, highlightbackground=self.BTN_BORDER_SELECTED) 
+
+        s_disp = self.suits_map_display[key_char][0]
+        self.selection_label_var.set(f"已选: {self.rank1}{s_disp}{self.rank2}{s_disp}")
+
+        final_hand = f"{self.rank1}{key_char}{self.rank2}{key_char}"
+        self.callback(final_hand.upper())
+        self.destroy()
+
+    # (V8) _on_pair_click 方法已被删除
+    # (V6) _on_unknown_click 方法已被删除
+
+    def _on_cancel(self):
+        """用户关闭了窗口"""
+        self.callback(None) # 回调 None 表示取消
+        self.destroy()
+
+    def _reset(self):
+        """(V8) 重置选择 (Pair 逻辑合并)"""
+        
+        def reset_button_row(buttons_dict, state='normal'):
+            for key, btn in buttons_dict.items():
+                if key == 'unknown':
+                    color = self.LABEL_FG
+                else:
+                    color = self.suits_map_display[key][1]
+                
+                btn.config(state=state, fg=color, bg=self.BTN_BG_NORMAL, relief='raised')
+                
+                if state == 'normal':
+                    btn.bind("<Enter>", btn.bindtags()[0], "+")
+                    btn.bind("<Leave>", btn.bindtags()[0], "+")
+                else:
+                    btn.unbind("<Enter>")
+                    btn.unbind("<Leave>")
+
+        # (V8) Offsuit 和 Pair 逻辑相同
+        if self.hand_type == 'offsuit' or self.hand_type == 'pair':
+            self.selection = [None, None]
+            reset_button_row(self.buttons_r1, state='normal')
+            reset_button_row(self.buttons_r2, state='disabled')
+        
+        elif self.hand_type == 'suited':
+            self.selection = []
+            reset_button_row(self.buttons_r1, state='normal')
+        
+        self._update_status_label()
+
+# ##################################################################
+# ######################## 结束修改窗口 ############################
+# ##################################################################
 
 
 # --- 起手牌强度图表窗口 ---
@@ -369,6 +855,35 @@ class StrengthChartWindow(tk.Toplevel):
             
         self.destroy()
 
+    def _reset(self):
+        """(V5) 重置选择"""
+        
+        def reset_button_row(buttons_dict, state='normal'):
+            for key, btn in buttons_dict.items():
+                if key == 'unknown':
+                    color = self.LABEL_FG
+                else:
+                    color = self.suits_map_display[key][1]
+                
+                btn.config(state=state, fg=color, bg=self.BTN_BG_NORMAL, relief='raised')
+                
+                if state == 'normal':
+                    btn.bind("<Enter>", btn.bindtags()[0], "+")
+                    btn.bind("<Leave>", btn.bindtags()[0], "+")
+                else:
+                    btn.unbind("<Enter>")
+                    btn.unbind("<Leave>")
+
+        if self.hand_type == 'offsuit':
+            self.selection = [None, None]
+            reset_button_row(self.buttons_r1, state='normal')
+            reset_button_row(self.buttons_r2, state='disabled')
+        
+        elif self.hand_type in ['suited', 'pair']:
+            self.selection = []
+            reset_button_row(self.buttons_r1, state='normal')
+        
+        self._update_status_label()
     # ##################################################################
     # ################## 新增: 窗口移动事件处理函数 ####################
     # ##################################################################
@@ -659,8 +1174,13 @@ class PokerApp(tk.Tk):
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')
 
-        self.range_selection_p1 = set()
-        self.range_selection_p2 = set()
+        # ##################################################################
+        # ############### 修改: 移除旧的 range selection ###################
+        # ##################################################################
+        # self.range_selection_p1 = set() # <-- 已移除
+        # self.range_selection_p2 = set() # <-- 已移除
+        # ##################################################################
+        
         self.board_cards = []
         self.analysis_thread = None
         self.analysis_result = None
@@ -748,6 +1268,39 @@ class PokerApp(tk.Tk):
         self.strength_chart_window = StrengthChartWindow(self)
 
     # ##################################################################
+    # ############ 新增: 辅助函数 - 将特定手牌转为范围类别 #############
+    # ##################################################################
+    def _specific_to_range_category(self, hand_str):
+        """
+        辅助函数：将特定的手牌字符串 (e.g., "AsKc") 转换为其范围类别 (e.g., "AKo")。
+        返回 None 如果格式不正确。
+        """
+        try:
+            if len(hand_str) != 4:
+                return None
+                
+            r1, s1 = hand_str[0].upper(), hand_str[1].lower()
+            r2, s2 = hand_str[2].upper(), hand_str[3].lower()
+            
+            ranks_order = 'AKQJT98765432'
+            if r1 not in ranks_order or r2 not in ranks_order or s1 not in 'shdc' or s2 not in 'shdc':
+                return None
+
+            # 确保 r1 是高牌阶 (A > K)
+            if ranks_order.index(r1) > ranks_order.index(r2):
+                r1, r2 = r2, r1 # 交换牌阶
+            
+            if r1 == r2:
+                return f"{r1}{r2}" # Pair, e.g., "AA"
+            elif s1 == s2:
+                return f"{r1}{r2}s" # Suited, e.g., "AKs"
+            else:
+                return f"{r1}{r2}o" # Offsuit, e.g., "AKo"
+        except Exception:
+            return None # 捕获任何异常，例如 index 找不到
+
+
+    # ##################################################################
     # ###################### 关键修改: 缓动动画逻辑 ####################
     # ##################################################################
     def _start_fade_in(self):
@@ -803,15 +1356,15 @@ class PokerApp(tk.Tk):
     # ##################################################################
 
     def _configure_styles(self):
-        # --- 全局和通用组件样式 ---
+        # --- (V7) 美化：统一字体为 "Microsoft YaHei" ---
         self.style.configure('.', background='#2e2e2e', foreground='white')
         self.style.configure('TFrame', background='#2e2e2e')
-        self.style.configure('TLabel', background='#2e2e2e', foreground='white', font=('Arial', 10))
+        self.style.configure('TLabel', background='#2e2e2e', foreground='white', font=('Microsoft YaHei', 10))
         self.style.configure('TLabelframe', background='#2e2e2e', bordercolor='#888')
-        self.style.configure('TLabelframe.Label', background='#2e2e2e', foreground='white', font=('Arial', 11, 'bold'))
+        self.style.configure('TLabelframe.Label', background='#2e2e2e', foreground='white', font=('Microsoft YaHei', 11, 'bold'))
         self.style.configure('TEntry', fieldbackground='#4a4a4a', foreground='white', insertbackground='white')
         self.style.configure('Treeview', fieldbackground='#3c3c3c', background='#3c3c3c', foreground='white', rowheight=25)
-        self.style.configure('Treeview.Heading', font=('Arial', 11, 'bold'), background='#4a4a4a', foreground='white')
+        self.style.configure('Treeview.Heading', font=('Microsoft YaHei', 11, 'bold'), background='#4a4a4a', foreground='white')
         self.style.map('Treeview.Heading', background=[('active', '#6a6a6a')])
         
         # --- 进度条样式 ---
@@ -819,17 +1372,8 @@ class PokerApp(tk.Tk):
         self.style.configure("p2.Horizontal.TProgressbar", background=self.P2_COLOR)
         self.style.configure("tie.Horizontal.TProgressbar", background='#6c757d')
         
-        # ##################################################################
-        # ############### 关键修改：移除绿色进度条样式 ###################
-        # ##################################################################
-        #
-        # 应用户要求，移除了自定义的 "main.Horizontal.TProgressbar" 样式
-        # 进度条将恢复为 ttk 'clam' 主题的默认外观
-        #
-        # ##################################################################
-        
-        # --- TTK 按钮样式 (恢复原状) ---
-        self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Arial', 10, 'bold'), borderwidth=1)
+        # --- TTK 按钮样式 (V7) ---
+        self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Microsoft YaHei', 10, 'bold'), borderwidth=1)
         self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
         
         # --- 移除 TTK 按钮的虚线焦点框 ---
@@ -859,12 +1403,12 @@ class PokerApp(tk.Tk):
 
         ttk.Label(player_setup_frame, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=8, sticky='w')
         self.p1_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Arial', 9)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
+        ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Microsoft YaHei', 9)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
         ttk.Button(player_setup_frame, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=8)
 
         ttk.Label(player_setup_frame, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=8, sticky='w')
         self.p2_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Arial', 9)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
+        ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Microsoft YaHei', 9)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
         ttk.Button(player_setup_frame, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=8)
 
         sim_frame = ttk.Frame(player_setup_frame)
@@ -879,23 +1423,13 @@ class PokerApp(tk.Tk):
         action_frame = ttk.Frame(parent_pane)
         action_frame.pack(side='bottom', pady=10, fill='x')
         
-        # ##################################################################
-        # ############### 关键修改：恢复为原始进度条 #####################
-        # ##################################################################
-        # 移除了 'style' 参数，恢复了 'ipady=3'，以匹配用户的原始代码
         self.analysis_progress_bar = ttk.Progressbar(action_frame, variable=self.progress_var)
         self.analysis_progress_bar.pack(fill='x', ipady=3, pady=(0, 8))
-        # ##################################################################
-        # ###################### 结束修改 #################################
-        # ##################################################################
         
         self.calc_button = ttk.Button(action_frame, text="开始分析", command=self.run_analysis_thread)
         self.calc_button.pack(fill='x', ipady=10, pady=5)
         ttk.Button(action_frame, text="清空全部", command=self.clear_all).pack(fill='x', ipady=10, pady=5)
         
-        # ##################################################################
-        # ################ 关键修改: 保存按钮引用 ######################
-        # ##################################################################
         self.open_chart_button = ttk.Button(parent_pane, text="查看起手牌强度图表", command=self._open_strength_chart)
         self.open_chart_button.pack(side='bottom', fill='x', ipady=10, pady=5)
 
@@ -909,23 +1443,23 @@ class PokerApp(tk.Tk):
         result_grid.pack(fill='x', expand=True)
         result_grid.columnconfigure(1, weight=1)
 
-        ttk.Label(result_grid, text="玩家1:", font=('Arial', 11, 'bold')).grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        ttk.Label(result_grid, text="玩家1:", font=('Microsoft YaHei', 11, 'bold')).grid(row=0, column=0, sticky='w', padx=5, pady=5)
         self.p1_win_bar = ttk.Progressbar(result_grid, style="p1.Horizontal.TProgressbar")
         self.p1_win_bar.grid(row=0, column=1, sticky='ew', padx=5)
         self.p1_win_var = tk.StringVar(value="N/A")
-        ttk.Label(result_grid, textvariable=self.p1_win_var, font=('Arial', 11, 'bold')).grid(row=0, column=2, sticky='e', padx=10)
+        ttk.Label(result_grid, textvariable=self.p1_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=0, column=2, sticky='e', padx=10)
 
-        ttk.Label(result_grid, text="玩家2:", font=('Arial', 11, 'bold')).grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        ttk.Label(result_grid, text="玩家2:", font=('Microsoft YaHei', 11, 'bold')).grid(row=1, column=0, sticky='w', padx=5, pady=5)
         self.p2_win_bar = ttk.Progressbar(result_grid, style="p2.Horizontal.TProgressbar")
         self.p2_win_bar.grid(row=1, column=1, sticky='ew', padx=5)
         self.p2_win_var = tk.StringVar(value="N/A")
-        ttk.Label(result_grid, textvariable=self.p2_win_var, font=('Arial', 11, 'bold')).grid(row=1, column=2, sticky='e', padx=10)
+        ttk.Label(result_grid, textvariable=self.p2_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=1, column=2, sticky='e', padx=10)
 
-        ttk.Label(result_grid, text="平局:", font=('Arial', 11, 'bold')).grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        ttk.Label(result_grid, text="平局:", font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=0, sticky='w', padx=5, pady=5)
         self.tie_bar = ttk.Progressbar(result_grid, style="tie.Horizontal.TProgressbar")
         self.tie_bar.grid(row=2, column=1, sticky='ew', padx=5)
         self.tie_var = tk.StringVar(value="N/A")
-        ttk.Label(result_grid, textvariable=self.tie_var, font=('Arial', 11, 'bold')).grid(row=2, column=2, sticky='e', padx=10)
+        ttk.Label(result_grid, textvariable=self.tie_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=2, sticky='e', padx=10)
 
         self._create_range_selector(parent_pane)
     
@@ -935,7 +1469,7 @@ class PokerApp(tk.Tk):
         display_frame = ttk.Frame(board_frame, relief='solid', borderwidth=1)
         display_frame.pack(fill='x', pady=5, padx=10)
         self.board_display_var = tk.StringVar(value="已选公共牌: ")
-        ttk.Label(display_frame, textvariable=self.board_display_var, font=("Arial", 11, "bold")).pack(pady=5, side='left', padx=10)
+        ttk.Label(display_frame, textvariable=self.board_display_var, font=("Microsoft YaHei", 11, "bold")).pack(pady=5, side='left', padx=10)
         ttk.Button(display_frame, text="重置", command=self._reset_board_selector).pack(side='right', padx=5, pady=5)
         card_pool_frame = ttk.Frame(board_frame)
         card_pool_frame.pack(pady=5, padx=10)
@@ -1038,6 +1572,7 @@ class PokerApp(tk.Tk):
             for j, rank_char in enumerate(ranks):
                 card_str = f"{rank_char}{suit_char}"
                 display_text = f"{rank_char}{suits_map[suit_char]}"
+                # (V7) 美化：公共牌按钮字体保持 Arial 以获得最佳的 ♠ 符号渲染
                 btn = tk.Button(card_pool_frame, text=display_text, font=('Arial', 10, 'bold'), 
                             width=4, fg=suit_colors[suit_char], bg='#d0d0d0', relief='raised', 
                             command=lambda s=card_str: self._on_board_card_select(s), takefocus=0)
@@ -1060,16 +1595,17 @@ class PokerApp(tk.Tk):
         radio_frame = ttk.Frame(range_frame); radio_frame.pack(anchor='w', padx=10, pady=5)
         self.active_player_for_range = tk.IntVar(value=1)
         
-        # --- 恢复为 tk.Button 并添加 takefocus=0 ---
-        self.p1_radio_btn = tk.Button(radio_frame, text="为玩家1选择", relief='flat', bg=self.P1_COLOR, fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#0056b3', activeforeground='white', command=lambda: self._select_player_for_range(1), takefocus=0)
+        # (V7) 美化：字体改为 "Microsoft YaHei"
+        self.p1_radio_btn = tk.Button(radio_frame, text="为玩家1选择", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#0056b3', activeforeground='white', command=lambda: self._select_player_for_range(1), takefocus=0)
         self.p1_radio_btn.pack(side='left', padx=5, ipady=4)
-        self.p2_radio_btn = tk.Button(radio_frame, text="为玩家2选择", relief='flat', bg='#4a4a4a', fg='white', font=('Arial', 9, 'bold'), borderwidth=0, activebackground='#6a6a6a', activeforeground='white', command=lambda: self._select_player_for_range(2), takefocus=0)
+        self.p2_radio_btn = tk.Button(radio_frame, text="为玩家2选择", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#6a6a6a', activeforeground='white', command=lambda: self._select_player_for_range(2), takefocus=0)
         self.p2_radio_btn.pack(side='left', padx=5, ipady=4)
 
         grid_frame = ttk.Frame(range_frame); grid_frame.pack(pady=10, padx=10)
         self.range_buttons = {}
         ranks = 'AKQJT98765432'
-        btn_font = font.Font(family='Arial', size=9, weight='bold')
+        # (V7) 美化：字体改为 "Microsoft YaHei"
+        btn_font = font.Font(family='Microsoft YaHei', size=9, weight='bold')
         
         # 创建渐变变色的辅助函数
         def create_hover_effect(btn, hand_text):
@@ -1098,11 +1634,34 @@ class PokerApp(tk.Tk):
                 return rgb_to_hex(result)
             
             def get_original_color():
-                """获取按钮的原始颜色"""
+                """
+                (新) 动态获取按钮的 *正确* 原始颜色
+                这修复了一个bug：当按钮颜色因选择而改变时，悬停动画会恢复到 *旧的* 颜色。
+                """
                 hand = btn.animation_data['hand_text']
-                # --- 变化: 增加了重叠逻辑 ---
-                in_p1 = hand in self.range_selection_p1
-                in_p2 = hand in self.range_selection_p2
+                
+                # 1. 这是一个 'mini' 版的 _update_range_grid_colors
+                # 我们需要实时检查文本框内容
+                def get_categories(hand_var):
+                    text = hand_var.get()
+                    # (V6-Fix-3) 修复大小写问题
+                    items = [s.strip() for s in text.split(',') if s.strip()]
+                    categories = set()
+                    for item in items:
+                        if len(item) <= 3:
+                            categories.add(item)
+                        else:
+                            cat = self._specific_to_range_category(item)
+                            if cat: categories.add(cat)
+                    return categories
+                
+                # 必须在函数调用时获取，否则 self.p1_hand_var 可能不存在
+                p1_cats = get_categories(self.p1_hand_var)
+                p2_cats = get_categories(self.p2_hand_var)
+
+                # 2. 决定颜色
+                in_p1 = hand in p1_cats
+                in_p2 = hand in p2_cats
 
                 if in_p1 and in_p2:
                     return self.BOTH_COLOR
@@ -1117,41 +1676,70 @@ class PokerApp(tk.Tk):
                         return self.SUITED_BG
                     else: 
                         return self.DEFAULT_BG
-                # --- 结束变化 ---
             
             def animate_color():
                 """执行颜色动画"""
                 data = btn.animation_data
                 total_steps = 15  # 总步数，数字越大动画越慢
-                original_color = get_original_color()
                 
                 if data['is_hovering']:
-                    # 悬停时，逐渐变亮
+                    # 悬停时，目标是变亮。
+                    if 'animation_start_color' not in data:
+                         data['animation_start_color'] = get_original_color()
+                    
+                    original_color = data['animation_start_color']
+
                     if data['current_step'] < total_steps:
                         data['current_step'] += 1
-                        factor = data['current_step'] / total_steps
-                        # 目标颜色：原色变亮（增加RGB值）
-                        target = '#ffffff'
-                        new_color = interpolate_color(original_color, target, factor * 0.3)
-                        btn.configure(bg=new_color)
-                        data['timer_id'] = btn.after(20, animate_color)  # 20ms后继续动画
-                else:
-                    # 离开时，逐渐恢复原色
-                    if data['current_step'] > 0:
-                        data['current_step'] -= 1
                         factor = data['current_step'] / total_steps
                         target = '#ffffff'
                         new_color = interpolate_color(original_color, target, factor * 0.3)
                         btn.configure(bg=new_color)
                         data['timer_id'] = btn.after(20, animate_color)
+                else:
+                    # 离开时，逐渐恢复 *当前* 正确的颜色
+                    
+                    # ##########################################################
+                    # #################### 关键修复 ############################
+                    # ##########################################################
+                    # 重新计算正确的 "原始" 颜色，以防在悬停期间它被更改了
+                    current_correct_original_color = get_original_color()
+                    # 动画开始时的颜色（如果不存在，则使用当前正确的颜色）
+                    start_color = data.get('animation_start_color', current_correct_original_color)
+                    # ##########################################################
+                    
+                    if data['current_step'] > 0:
+                        data['current_step'] -= 1
+                        factor = data['current_step'] / total_steps
+                        target = '#ffffff'
+                        
+                        # 我们从 "start_color" 变亮的颜色 恢复
+                        # 为了防止在“恢复”期间颜色发生跳跃（如果基础颜色已改变），
+                        # 我们的插值基准应该是 current_correct_original_color
+                        
+                        new_color = interpolate_color(current_correct_original_color, target, factor * 0.3)
+
+                        btn.configure(bg=new_color)
+                        data['timer_id'] = btn.after(20, animate_color)
                     else:
-                        btn.configure(bg=original_color)
+                        # 动画结束，设置_最终_正确的颜色
+                        btn.configure(bg=current_correct_original_color)
+                        if 'animation_start_color' in data:
+                            del data['animation_start_color'] # 清理
             
             def on_enter(event):
                 data = btn.animation_data
                 if data['timer_id']:
                     btn.after_cancel(data['timer_id'])
                 data['is_hovering'] = True
+                
+                # ##########################################################
+                # #################### 关键修复 ############################
+                # ##########################################################
+                # 在动画开始时捕获 *当前* 的原始颜色
+                data['animation_start_color'] = get_original_color()
+                # ##########################################################
+                
                 animate_color()
             
             def on_leave(event):
@@ -1176,15 +1764,19 @@ class PokerApp(tk.Tk):
                 # 添加悬停效果
                 create_hover_effect(btn, text)
 
+    # ##################################################################
+    # ############### 修改: reset_player 方法 ##########################
+    # ##################################################################
     def _reset_player1(self):
         self.p1_hand_var.set("")
-        self.range_selection_p1.clear()
+        # self.range_selection_p1.clear() # <-- 已移除
         self._update_range_grid_colors()
     
     def _reset_player2(self):
         self.p2_hand_var.set("")
-        self.range_selection_p2.clear()
+        # self.range_selection_p2.clear() # <-- 已移除
         self._update_range_grid_colors()
+    # ##################################################################
     
     def _select_player_for_range(self, player_num):
         self.active_player_for_range.set(player_num)
@@ -1202,21 +1794,156 @@ class PokerApp(tk.Tk):
         for btn in self.board_card_buttons.values(): btn.config(state='normal', relief='raised', bg='#d0d0d0')
         self.board_display_var.set("已选公共牌: ")
     
+    # ##################################################################
+    # ############# 修改: toggle_range_button (V6-Fix-3) ###############
+    # ##################################################################
     def toggle_range_button(self, hand_text):
+        """
+        (V6-Fix-3) 修复了 V6 的回调逻辑错误。
+        - 修复了“未知”范围 (e.g., "AKo") 无法被添加的bug。
+        - 修复了添加特定手牌 (e.g., "AsKh") 时与
+          已存在的父范围 (e.g., "AKo") 之间的冲突逻辑。
+        """
         active_player = self.active_player_for_range.get()
-        active_selection = self.range_selection_p1 if active_player == 1 else self.range_selection_p2
-        if hand_text in active_selection:
-            active_selection.remove(hand_text)
-        else:
-            active_selection.add(hand_text)
-        self.update_range_entry(active_player)
-        self._update_range_grid_colors()
+        entry_var = self.p1_hand_var if active_player == 1 else self.p2_hand_var
+        current_text = entry_var.get()
+        # (V6-Fix-3) 修复大小写问题：读取时保持原样
+        current_items_list = [s.strip() for s in current_text.split(',') if s.strip()]
+        current_items_set = set(current_items_list)
 
+        # --- 步骤 1: 检查此类别是否已任何形式被选中 ---
+        is_already_selected = False
+        if hand_text in current_items_set:
+            is_already_selected = True
+        else:
+            for item in current_items_set:
+                if self._specific_to_range_category(item) == hand_text:
+                    is_already_selected = True
+                    break
+
+        # --- 步骤 2: 执行新逻辑 ---
+
+        if is_already_selected:
+            # --- "取消"逻辑 (第二次点击) ---
+            new_items_list = []
+            for item in current_items_list:
+                if item == hand_text:
+                    continue # 移除范围 (e.g., "AKs")
+                if self._specific_to_range_category(item) == hand_text:
+                    continue # 移除特定组合 (e.g., "AsKs")
+                
+                new_items_list.append(item) # 保留其他所有牌
+
+            entry_var.set(", ".join(new_items_list))
+            self._update_range_grid_colors()
+
+        else:
+            # --- "打开选择器"逻辑 (第一次点击) ---
+            
+            # (V6-Fix) 在这里定义回调函数
+            def handle_selection_callback(result_hand_str):
+                if result_hand_str is None:
+                    return # 用户取消了
+
+                # (V6-Fix) 在回调 *内部* 获取变量，确保 player num 正确
+                active_player_inner = self.active_player_for_range.get()
+                entry_var_inner = self.p1_hand_var if active_player_inner == 1 else self.p2_hand_var
+                current_text_inner = entry_var_inner.get()
+                # (V6-Fix-3) 修复大小写问题：读取时保持原样
+                current_items_list_inner = [s.strip() for s in current_text_inner.split(',') if s.strip()]
+                
+                # (V6-Fix) 必须使用 set 来进行添加/删除
+                current_items_set_inner = set(current_items_list_inner)
+
+                # (V6-Fix-3) 不在这里盲目 .upper()
+                new_hands_to_process = [h.strip() for h in result_hand_str.split(',') if h.strip()]
+                
+                for hand_item in new_hands_to_process:
+                    
+                    # (V6-Fix-3) 范围(<=3)保持原样, 特定手牌(4)转为大写
+                    new_hand = hand_item
+                    if len(hand_item) == 4:
+                        new_hand = hand_item.upper() # e.g., "AsKh" -> "ASKH"
+                    # else: "AKo" 保持 "AKo"
+                    
+                    if new_hand in current_items_set_inner:
+                        # (V6-Fix) 如果 V6 窗口返回了一个已存在的项，则移除它
+                        current_items_set_inner.remove(new_hand)
+                    
+                    else:
+                        # --- (V6-Fix) 关键逻辑：添加新项 ---
+                        
+                        if len(new_hand) <= 3:
+                            # --- 1. 正在添加一个范围 (e.g., "AKo") ---
+                            
+                            # (V6-Fix-3) 使用 new_hand 作为父范围
+                            parent_range = new_hand
+                            items_to_remove = set()
+                            for item in current_items_set_inner:
+                                # (V6-Fix-3) 比较类别与父范围
+                                if self._specific_to_range_category(item) == parent_range:
+                                    items_to_remove.add(item)
+                            
+                            current_items_set_inner.difference_update(items_to_remove)
+                            
+                            # (V6-Fix-3) 添加正确的父范围 (e.g., "AKo")
+                            current_items_set_inner.add(parent_range)
+
+                        else:
+                            # --- 2. 正在添加一个特定手牌 (e.g., "ASKH") ---
+                            parent_range = self._specific_to_range_category(new_hand) # "AKo"
+                            
+                            if parent_range in current_items_set_inner:
+                                # (V6-Fix) 关键：父范围存在！
+                                # 移除父范围 (e.g., "AKo")
+                                current_items_set_inner.remove(parent_range)
+                                # 添加这个特定的子手牌 (e.g., "ASKH")
+                                current_items_set_inner.add(new_hand)
+                            
+                            else:
+                                # (V6-Fix) 父范围不存在，直接添加子手牌
+                                current_items_set_inner.add(new_hand)
+
+                # 4. 更新输入框 (从 set 转换回来)
+                final_items = sorted(list(current_items_set_inner))
+                entry_var_inner.set(", ".join(final_items))
+                
+                # 5. 更新网格颜色
+                self.after(50, self._update_range_grid_colors)
+
+            # --- 启动花色选择器 ---
+            SuitSelectorWindow(self, hand_text, handle_selection_callback)
+
+    # ##################################################################
+    # ############# 修改: _update_range_grid_colors (V6-Fix-3) #########
+    # ##################################################################
     def _update_range_grid_colors(self):
+        
+        # 1. 从输入框解析所有选中的项目
+        def get_all_selected_categories(hand_var):
+            text = hand_var.get()
+            # (V6-Fix-3) 错误：不能在这里盲目 .upper()
+            # items = [s.strip().upper() for s in text.split(',') if s.strip()]
+            items = [s.strip() for s in text.split(',') if s.strip()] 
+            categories = set()
+            for item in items:
+                if len(item) <= 3:
+                    # (V6-Fix-3) item 是一个范围 (e.g., "AKo"), 直接添加
+                    categories.add(item) 
+                else:
+                    # (V6-Fix-3) item 是特定手牌 (e.g., "ASKH"), 转换它
+                    cat = self._specific_to_range_category(item) 
+                    if cat:
+                        categories.add(cat) # 添加 "AKo"
+            return categories
+
+        p1_categories = get_all_selected_categories(self.p1_hand_var)
+        p2_categories = get_all_selected_categories(self.p2_hand_var)
+
+        # 2. 更新按钮颜色
         for hand, btn in self.range_buttons.items():
-            # --- 变化: 增加了重叠逻辑 ---
-            in_p1 = hand in self.range_selection_p1
-            in_p2 = hand in self.range_selection_p2
+            in_p1 = hand in p1_categories
+            in_p2 = hand in p2_categories
 
             if in_p1 and in_p2:
                 btn.config(bg=self.BOTH_COLOR, relief='sunken')
@@ -1224,26 +1951,18 @@ class PokerApp(tk.Tk):
                 btn.config(bg=self.P1_COLOR, relief='sunken')
             elif in_p2:
                 btn.config(bg=self.P2_COLOR, relief='sunken')
-            # --- 结束变化 ---
             else:
+                # 恢复默认背景
                 if len(hand) == 2: bg = self.PAIR_BG
                 elif hand.endswith('s'): bg = self.SUITED_BG
                 else: bg = self.DEFAULT_BG
                 btn.config(bg=bg, relief='raised')
 
-    def update_range_entry(self, player_num):
-        selection = self.range_selection_p1 if player_num == 1 else self.range_selection_p2
-        entry_var = self.p1_hand_var if player_num == 1 else self.p2_hand_var
-        if selection:
-            ranks = 'AKQJT98765432'
-            def sort_key(hand):
-                if len(hand) == 2: return (ranks.index(hand[0]), ranks.index(hand[1]), 2)
-                elif hand.endswith('s'): return (ranks.index(hand[0]), ranks.index(hand[1]), 0)
-                else: return (ranks.index(hand[0]), ranks.index(hand[1]), 1)
-            sorted_range = sorted(list(selection), key=sort_key)
-            entry_var.set(",".join(sorted_range))
-        else:
-            entry_var.set("")
+    # ##################################################################
+    # ############### 删除: update_range_entry (不再需要) ##############
+    # ##################################################################
+    # def update_range_entry(self, player_num): # <-- 整个方法已删除
+    #     ...
             
     def clear_all(self):
         self._reset_player1(); self._reset_player2(); self._reset_board_selector()
@@ -1313,6 +2032,7 @@ class PokerApp(tk.Tk):
                 else:
                     self.strength_tree.insert('', tk.END, values=("(请输入玩家1手牌/范围)", "N/A"))
             except Exception as e:
+                # (V9) 这里是捕获和显示错误的地方
                 messagebox.showerror("分析出错", f"错误: {e}")
                 self._reset_equity_display()
             finally:
@@ -1320,8 +2040,15 @@ class PokerApp(tk.Tk):
 
     def run_analysis_calculation(self):
         try:
-            p1_input = self.p1_hand_var.get().split(',')
-            p2_input = self.p2_hand_var.get().split(',')
+            # ##################################################################
+            # ############### (V9) 修改: 解析带逗号和空格的字符串 ###########
+            # ##################################################################
+            # (V9) 这里的 .upper() 是故意保留的，因为 _determine_input_type
+            # 期望的是大写输入，以便正确解析 "AsKc" vs "asko"
+            p1_input = [s.strip().upper() for s in self.p1_hand_var.get().split(',') if s.strip()]
+            p2_input = [s.strip().upper() for s in self.p2_hand_var.get().split(',') if s.strip()]
+            # ##################################################################
+            
             board_input = "".join(self.board_cards)
             num_sims = int(self.num_simulations_var.get())
             
@@ -1336,6 +2063,7 @@ class PokerApp(tk.Tk):
                 progress_callback=progress_update
             )
         except Exception as e:
+            # (V9) 将错误传递给主线程
             self.analysis_result = e
 
 if __name__ == "__main__":
