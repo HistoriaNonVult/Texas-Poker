@@ -1225,6 +1225,12 @@ class GradientProgressBar(tk.Canvas):
         c2 = self._hex_to_rgb(color2)
         new_rgb = tuple(c1[i] + (c2[i] - c1[i]) * t for i in range(3))
         return self._rgb_to_hex(new_rgb)
+    
+    # (V12) 新增：允许动态修改颜色
+    def set_colors(self, new_color_list):
+        """更新渐变颜色"""
+        self.color_list = new_color_list
+        self._draw_gradient()
 
     def _draw_gradient(self):
         """绘制背景渐变"""
@@ -1362,6 +1368,37 @@ class PokerApp(tk.Tk):
         self.DEFAULT_BG = '#4f4f4f'
         self.PAIR_BG = '#8fbc8f'
         self.SUITED_BG = '#4a7a96'
+        
+        # ##################################################################
+        # ############### (V12) 新增：多组进度条配色方案 ####################
+        # ##################################################################
+        self.pb_themes = [
+            # 现有
+            ['#4158D0', '#C850C0', '#FFCC70'], # 经典的蓝紫-洋红-暖橙
+            ['#0093E9', '#80D0C7'],            # 清新的蓝青色
+            ['#8EC5FC', '#E0C3FC'],            # 柔和的蓝紫色
+            ['#FA8BFF', '#2BD2FF', '#2BFF88'], # 强烈的霓虹三色
+            ['#FF9A9E', '#FECFEF'],            # 温暖的粉色系
+            ['#FBAB7E', '#F7CE68'],            # 活力的橙黄色
+            ['#85FFBD', '#FFFB7F'],            # 清爽的柠檬绿
+            ['#FF3CAC', '#784BA0', '#2B86C5'], # 深邃的紫蓝色
+            # 新增
+            ['#FF9966', '#FF5E62'],            # 蜜桃橘红
+            ['#56ab2f', '#a8e063'],            # 清新草绿
+            ['#F12711', '#F5AF19'],            # 火焰红黄
+            ['#FC466B', '#3F5EFB'],            # 迷幻红蓝
+            ['#C6FFDD', '#FBD786', '#f7797d'], # 马卡龙三色
+            ['#12c2e9', '#c471ed', '#f64f59'], # 经典的蓝紫红
+            ['#b92b27', '#1565C0'],            # 红蓝对决
+            ['#00F260', '#0575E6'],            # 极光绿蓝
+            ['#8E2DE2', '#4A00E0'],            # 魅影紫
+            ['#00c3ff', '#ffff1c'],            # 天蓝亮黄
+            ['#ee0979', '#ff6a00'],            # 热情红橙
+            ['#DA22FF', '#9733EE'],            # 赛博紫
+            ['#1D976C', '#93F9B9'],            # 翡翠绿
+            ['#E55D87', '#5FC3E4']             # 糖果粉蓝
+        ]
+        # ##################################################################
         
         # ##################################################################
         # ################# 新增: 初始化图表窗口引用 ###################
@@ -1595,10 +1632,11 @@ class PokerApp(tk.Tk):
         # ##################################################################
         # ############### 修改: 使用自定义渐变进度条 #######################
         # ##################################################################
-        # 颜色: 炫彩渐变 (蓝紫 -> 紫红 -> 橙黄)
+        # 初始随机选择一个主题
+        initial_theme = random.choice(self.pb_themes)
         self.analysis_progress_bar = GradientProgressBar(
             action_frame, 
-            color_list=['#4158D0', '#C850C0', '#FFCC70'], 
+            color_list=initial_theme, 
             height=18
         )
         self.analysis_progress_bar.pack(fill='x', pady=(0, 8))
@@ -2178,6 +2216,11 @@ class PokerApp(tk.Tk):
             return
 
         self._reset_equity_display()
+        
+        # --- (V12) 新增: 每次开始分析时随机切换进度条颜色 ---
+        new_theme = random.choice(self.pb_themes)
+        self.analysis_progress_bar.set_colors(new_theme)
+        # -----------------------------------------
         
         # (修改) 使用自定义方法设置最大值
         max_val = num_sims if num_sims > 0 else 1
