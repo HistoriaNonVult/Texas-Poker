@@ -6,6 +6,7 @@ from collections import defaultdict
 import multiprocessing # 引入多进程模块
 import sys # 引入 sys 模块，用于处理打包后的环境
 import math # 引入 math 模块以使用缓动函数
+import webbrowser # 新增: 用于打开网页链接
 
 # 建议安装 'treys' 库: pip install treys
 try:
@@ -324,15 +325,16 @@ class PokerLogic:
             num_cores = 1
             
         # ##################################################################
-        # ############### V9-Fix: 优化进度条平滑度 #######################
+        # ############### V11-Fix: 优化任务分块大小以提升流畅度 #############
         # ##################################################################
         
-        TARGET_SMOOTHNESS_TASKS = 100  # 目标更新100次
+        # 增加任务数量，使更新更频繁，从而使进度条更流畅
+        TARGET_SMOOTHNESS_TASKS = 150  # 原为100，增加到150
 
         if num_simulations <= 0:
             num_tasks, chunk_size, remainder = 0, 0, 0
         else:
-            # 目标是 100 个任务块，但任务数不能超过总模拟数
+            # 目标是 150 个任务块，但任务数不能超过总模拟数
             num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
             
             chunk_size = num_simulations // num_tasks
@@ -982,10 +984,20 @@ class StrengthChartWindow(tk.Toplevel):
         ttk.Label(main_frame, text="起手牌强度等级表", font=("Microsoft YaHei", 16, "bold")).pack(pady=(1,1))
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(pady=1, fill='x', expand=True)
+        
         grid_frame = ttk.Frame(content_frame)
         grid_frame.pack(side='left', padx=(0, 20), anchor='n')
-        legend_frame = ttk.LabelFrame(content_frame, text="图例")
-        legend_frame.pack(side='left', fill='y', anchor='n')
+        
+        # ##################################################################
+        # ############### 修改: 创建右侧面板以容纳图例和按钮 ###############
+        # ##################################################################
+        right_content_frame = ttk.Frame(content_frame)
+        right_content_frame.pack(side='left', anchor='n', fill='y')
+
+        legend_frame = ttk.LabelFrame(right_content_frame, text="图例")
+        legend_frame.pack(side='top', fill='x')
+        # ##################################################################
+
         hand_tiers = {
             # T1: 红色 (强力、警示)
             "超级精英 (Super Premium)": (
@@ -1060,10 +1072,25 @@ class StrengthChartWindow(tk.Toplevel):
             for hand in hands: hand_to_tier_color[hand] = color
         for tier_name, (color, _) in hand_tiers.items():
             legend_item = ttk.Frame(legend_frame)
-            legend_item.pack(anchor='w', padx=10, pady=5)
+            # ##################################################################
+            # ############### 修改: 恢复间距 ##################
+            # ##################################################################
+            legend_item.pack(anchor='w', padx=10, pady=5) # 恢复到较紧凑的间距
             tk.Label(legend_item, text=" ", bg=color, width=2, relief='solid', borderwidth=1).pack(side='left')
             ttk.Label(legend_item, text=f"  {tier_name}").pack(side='left')
+            
+        # ##################################################################
+        # ############### 修改: 增加占位符以撑大图例框 #####################
+        # ##################################################################
+        ttk.Frame(legend_frame, height=60).pack(fill='x')
         
+        # ##################################################################
+        # ############### 新增: 添加“起手牌热力图”按钮 #####################
+        # ##################################################################
+        heatmap_btn = ttk.Button(right_content_frame, text="起手牌热力图", command=lambda: webbrowser.open("https://historianonvult.github.io/poker-heatmap"))
+        heatmap_btn.pack(side='top', pady=10, fill='x')
+        # ##################################################################
+
         ranks = 'AKQJT98765432'
         btn_font = font.Font(family='Arial', size=10, weight='bold')
         
@@ -1158,6 +1185,129 @@ class StrengthChartWindow(tk.Toplevel):
                         "● 中位 (Middle Position - MP): 可以适当增加一些强可玩牌和投机牌。\n"
                         "● 后位 (Late Position - CO/BTN): 这是最好的位置。你可以用更宽的范围加注，包括很多潜力牌和边缘牌，以攻击盲注。")
         ttk.Label(strategy_frame, text=strategy_text, wraplength=800, justify='left').pack(padx=10, pady=10)
+
+# ##################################################################
+# ############### 新增：渐变进度条类 ###############################
+# ##################################################################
+class GradientProgressBar(tk.Canvas):
+    """
+    自定义渐变进度条，替代 ttk.Progressbar 以实现更丰富的颜色效果。
+    使用 Canvas 绘制渐变背景，并通过遮罩层控制进度显示。
+    (V11-Opt) 优化绘制逻辑：分段绘制以减少Canvas对象数量，提升性能。
+    """
+    def __init__(self, parent, color_list, max_val=100, width=200, height=20, bg_color='#2e2e2e', **kwargs):
+        # 初始化 Canvas，无边框，无高亮
+        super().__init__(parent, width=width, height=height, bg=bg_color, highlightthickness=0, borderwidth=0, **kwargs)
+        self.color_list = color_list  # 渐变颜色列表 (e.g. ['#ff0000', '#00ff00'])
+        self.max_val = max_val
+        self.current_val = 0
+        self.bg_color = bg_color
+        
+        # 绑定调整大小事件，以便重新绘制渐变
+        self.bind('<Configure>', self._on_resize)
+        
+        self._width = 1
+        self._height = 1
+        self._mask_id = None
+        
+    def _hex_to_rgb(self, hex_col):
+        """将 Hex 颜色转换为 RGB 元组"""
+        hex_col = hex_col.lstrip('#')
+        return tuple(int(hex_col[i:i+2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(self, rgb):
+        """将 RGB 元组转换为 Hex 颜色"""
+        return '#{:02x}{:02x}{:02x}'.format(int(max(0, min(255, rgb[0]))), int(max(0, min(255, rgb[1]))), int(max(0, min(255, rgb[2]))))
+
+    def _interpolate(self, color1, color2, t):
+        """在两个颜色之间进行线性插值"""
+        c1 = self._hex_to_rgb(color1)
+        c2 = self._hex_to_rgb(color2)
+        new_rgb = tuple(c1[i] + (c2[i] - c1[i]) * t for i in range(3))
+        return self._rgb_to_hex(new_rgb)
+
+    def _draw_gradient(self):
+        """绘制背景渐变"""
+        self.delete("all")
+        self._width = self.winfo_width()
+        self._height = self.winfo_height()
+        
+        # 宽度太小或不可见时不绘制
+        if self._width <= 1: return
+
+        num_colors = len(self.color_list)
+        if num_colors < 2: return
+        
+        # ##################################################################
+        # ############### V11-Opt: 性能优化 - 分段绘制 #####################
+        # ##################################################################
+        
+        # 旧逻辑：每个像素都画一条线 -> 对象数量 = 宽度 (e.g. 800+)
+        # 新逻辑：限制最大段数 (e.g. 120)，如果宽度很大，每个段会有几个像素宽
+        # 视觉上差异极小，但对象数量大幅减少，显著提升重绘性能
+        
+        limit_segments = 120 
+        step = max(1, self._width // limit_segments)
+        
+        for x in range(0, self._width, step):
+            # 计算当前段的中心点对应的全局进度
+            center_x = x + step / 2
+            t_global = center_x / self._width
+            
+            # 确定当前所在的颜色段索引
+            idx = int(t_global * (num_colors - 1))
+            idx = min(idx, num_colors - 2)
+            
+            # 计算该段内的局部进度 t
+            t_local = (t_global * (num_colors - 1)) - idx
+            
+            # 计算插值颜色
+            color = self._interpolate(self.color_list[idx], self.color_list[idx+1], t_local)
+            
+            # 绘制矩形填充这一小段
+            x1 = x
+            x2 = min(x + step, self._width)
+            # 使用 outline="" 避免矩形边框干扰，tags="gradient"
+            self.create_rectangle(x1, 0, x2, self._height, fill=color, outline="", tags="gradient")
+            
+        # ##################################################################
+        # ########################## 结束优化 #############################
+        # ##################################################################
+        
+        # 创建遮罩层矩形 (使用背景色覆盖未完成的部分)
+        # 初始状态下覆盖整个区域 (假设 val=0)
+        self._mask_id = self.create_rectangle(0, 0, self._width, self._height, fill=self.bg_color, outline="", tags="mask")
+        self._update_mask_position()
+
+    def _on_resize(self, event):
+        """窗口大小改变时重绘"""
+        # 简单的防抖动或限制重绘频率可以在这里添加，但对于此应用直接重绘通常足够快
+        self._draw_gradient()
+
+    def _update_mask_position(self):
+        """根据当前进度更新遮罩层的位置"""
+        if not self._mask_id: return
+        
+        if self.max_val <= 0: pct = 0
+        else: pct = min(1.0, max(0.0, self.current_val / self.max_val))
+        
+        # 计算遮罩层的起始 x 坐标
+        # 进度条显示部分为 0 到 x_pos，遮罩层覆盖 x_pos 到 width
+        x_pos = int(pct * self._width)
+        
+        # 更新遮罩层坐标
+        # y 坐标稍微超出范围以确保完全覆盖
+        self.coords(self._mask_id, x_pos, -5, self._width + 5, self._height + 5)
+        
+    def set_value(self, value):
+        """设置当前进度值"""
+        self.current_val = value
+        self._update_mask_position()
+        
+    def set_max(self, max_val):
+        """设置最大值"""
+        self.max_val = max_val
+        self._update_mask_position()
 
 # --- GUI 应用 (UI/UX 优化后) ---
 class PokerApp(tk.Tk):
@@ -1386,7 +1536,7 @@ class PokerApp(tk.Tk):
         self.style.configure('Treeview.Heading', font=('Microsoft YaHei', 11, 'bold'), background='#4a4a4a', foreground='white')
         self.style.map('Treeview.Heading', background=[('active', '#6a6a6a')])
         
-        # --- 进度条样式 ---
+        # --- 进度条样式 (恢复标准样式) ---
         self.style.configure("p1.Horizontal.TProgressbar", background=self.P1_COLOR)
         self.style.configure("p2.Horizontal.TProgressbar", background=self.P2_COLOR)
         self.style.configure("tie.Horizontal.TProgressbar", background='#6c757d')
@@ -1437,13 +1587,25 @@ class PokerApp(tk.Tk):
         ttk.Entry(sim_frame, textvariable=self.num_simulations_var, width=15).pack(side='left')
 
         self._create_board_selector(parent_pane)
-        self._create_strength_display(parent_pane) # 此处已修复 NameError
+        self._create_strength_display(parent_pane) 
         
         action_frame = ttk.Frame(parent_pane)
         action_frame.pack(side='bottom', pady=10, fill='x')
         
-        self.analysis_progress_bar = ttk.Progressbar(action_frame, variable=self.progress_var)
-        self.analysis_progress_bar.pack(fill='x', ipady=3, pady=(0, 8))
+        # ##################################################################
+        # ############### 修改: 使用自定义渐变进度条 #######################
+        # ##################################################################
+        # 颜色: 炫彩渐变 (蓝紫 -> 紫红 -> 橙黄)
+        self.analysis_progress_bar = GradientProgressBar(
+            action_frame, 
+            color_list=['#4158D0', '#C850C0', '#FFCC70'], 
+            height=18
+        )
+        self.analysis_progress_bar.pack(fill='x', pady=(0, 8))
+        
+        # 添加追踪：当 self.progress_var 改变时，自动更新自定义进度条
+        # *args 是必须的，因为 trace 回调会传递变数名等参数
+        self.progress_var.trace_add('write', lambda *args: self.analysis_progress_bar.set_value(self.progress_var.get()))
         
         self.calc_button = ttk.Button(action_frame, text="开始分析", command=self.run_analysis_thread)
         self.calc_button.pack(fill='x', ipady=10, pady=5)
@@ -1461,6 +1623,10 @@ class PokerApp(tk.Tk):
         result_grid = ttk.Frame(equity_frame, padding=10)
         result_grid.pack(fill='x', expand=True)
         result_grid.columnconfigure(1, weight=1)
+
+        # ##################################################################
+        # ############### 恢复: 使用标准 TTK 进度条 #######################
+        # ##################################################################
 
         ttk.Label(result_grid, text="玩家1:", font=('Microsoft YaHei', 11, 'bold')).grid(row=0, column=0, sticky='w', padx=5, pady=5)
         self.p1_win_bar = ttk.Progressbar(result_grid, style="p1.Horizontal.TProgressbar")
@@ -1989,9 +2155,12 @@ class PokerApp(tk.Tk):
         self._reset_equity_display()
                 
     def _reset_equity_display(self):
+        # (恢复) 重置标准 TTK 进度条
         self.p1_win_var.set("N/A"); self.p1_win_bar['value'] = 0
         self.p2_win_var.set("N/A"); self.p2_win_bar['value'] = 0
         self.tie_var.set("N/A"); self.tie_bar['value'] = 0
+        
+        # (修改) 重置自定义渐变进度条
         self.progress_var.set(0)
 
     def run_analysis_thread(self):
@@ -2009,7 +2178,11 @@ class PokerApp(tk.Tk):
             return
 
         self._reset_equity_display()
-        self.analysis_progress_bar['maximum'] = num_sims if num_sims > 0 else 1 # 避免 max=0
+        
+        # (修改) 使用自定义方法设置最大值
+        max_val = num_sims if num_sims > 0 else 1
+        self.analysis_progress_bar.set_max(max_val)
+        
         self.calc_button.config(state='disabled')
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         
@@ -2028,10 +2201,13 @@ class PokerApp(tk.Tk):
                 if isinstance(self.analysis_result, Exception): raise self.analysis_result
                 equity, strength, show_strength = self.analysis_result
                 
+                # (恢复) 更新标准 TTK 进度条
                 self.p1_win_var.set(f"{equity['p1_win']:.2f}%")
                 self.p1_win_bar['value'] = equity['p1_win']
+                
                 self.p2_win_var.set(f"{equity['p2_win']:.2f}%")
                 self.p2_win_bar['value'] = equity['p2_win']
+                
                 self.tie_var.set(f"{equity['tie']:.2f}%")
                 self.tie_bar['value'] = equity['tie']
                 
@@ -2039,8 +2215,8 @@ class PokerApp(tk.Tk):
                 if int(self.num_simulations_var.get()) == 0:
                     self.progress_var.set(0)
                 else:
-                    # 确保进度条在计算完成后显示为100%
-                    self.progress_var.set(self.analysis_progress_bar['maximum'])
+                    # (修改) 确保进度条在计算完成后显示为100%
+                    self.progress_var.set(self.analysis_progress_bar.max_val)
 
                 # (V10) show_strength 现在总是 True
                 if show_strength:
@@ -2075,7 +2251,8 @@ class PokerApp(tk.Tk):
             
             def progress_update(current_sim):
                 # 确保进度条不会超过最大值（在多进程回调中可能发生轻微的竞态）
-                max_sims = self.analysis_progress_bar['maximum']
+                # (修改) 获取自定义进度条最大值
+                max_sims = self.analysis_progress_bar.max_val      
                 self.progress_var.set(min(current_sim, max_sims))
 
             self.analysis_result = self.poker_logic.run_analysis(
