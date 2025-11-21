@@ -368,6 +368,365 @@ class PokerLogic:
                 p1_wins, p2_wins, ties, p1_strength_counts, valid_sims = result_chunk
                 
                 total_p1_wins += p1_wins
+try:
+    from treys import Card, Evaluator, Deck
+except ImportError:
+    print("错误: 未找到 'treys' 库。请使用 'pip install treys' 命令进行安装。")
+    exit()
+
+# ##################################################################
+# ############### 新增的并行计算工作函数 ###########################
+# ##################################################################
+def _run_simulation_chunk(args):
+    """
+    执行一小块模拟任务。
+    这个函数是独立的，以便被其他进程调用。
+    """
+    # 解包传入的参数
+    # (V10) 增加了 calculate_p1_strength 参数
+    p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards, calculate_p1_strength = args
+
+    evaluator = Evaluator() # 每个进程都需要创建自己的Evaluator实例
+    rank_class_to_string_map = {
+        1: "同花顺 (Straight Flush)", 2: "四条 (Four of a Kind)", 3: "葫芦 (Full House)",
+        4: "同花 (Flush)", 5: "顺子 (Straight)", 6: "三条 (Three of a Kind)",
+        7: "两对 (Two Pair)", 8: "一对 (One Pair)", 9: "高牌 (High Card)"
+    }
+
+    # 用于统计这个“块”的结果
+    p1_wins, p2_wins, ties = 0, 0, 0
+    p1_hand_strength_counts = defaultdict(int)
+    valid_sims = 0
+    # (V10) calculate_p1_strength = p1_type != 'random' # <-- 已删除, 从参数传入
+
+    # 在循环外创建一次牌库，并移除已知的公共牌
+    base_deck = list(master_deck_cards)
+    for card in board:
+        if card in base_deck:
+            base_deck.remove(card)
+
+    for _ in range(num_sims_chunk):
+        deck_cards = list(base_deck)
+
+        if p1_type == 'random':
+            if len(deck_cards) < 2: continue
+            p1_hand_sample = random.sample(deck_cards, 2)
+        else:
+            p1_hand_sample = random.choice(p1_hands)
+        
+        p1_hand_set = set(p1_hand_sample)
+        if not p1_hand_set.issubset(deck_cards): continue
+        for card in p1_hand_sample: deck_cards.remove(card)
+
+        if p2_type == 'random':
+            if len(deck_cards) < 2: continue
+            p2_hand_sample = random.sample(deck_cards, 2)
+        else:
+            p2_hand_sample = random.choice(p2_hands)
+        
+        if not p1_hand_set.isdisjoint(p2_hand_sample): continue
+        if not set(p2_hand_sample).issubset(deck_cards): continue
+        for card in p2_hand_sample: deck_cards.remove(card)
+        
+        run_board = list(board)
+        cards_needed = 5 - len(run_board)
+        if len(deck_cards) < cards_needed: continue
+        run_board.extend(random.sample(deck_cards, cards_needed))
+
+        p1_score = evaluator.evaluate(run_board, p1_hand_sample)
+        p2_score = evaluator.evaluate(run_board, p2_hand_sample)
+
+        # (V10) 现在这个 if 总是为 True
+        if calculate_p1_strength:
+            p1_rank_class = evaluator.get_rank_class(p1_score)
+            if p1_rank_class in rank_class_to_string_map:
+                hand_type_str = rank_class_to_string_map[p1_rank_class]
+                p1_hand_strength_counts[hand_type_str] += 1
+        
+        if p1_score < p2_score: p1_wins += 1
+        elif p2_score < p1_score: p2_wins += 1
+        else: ties += 1
+        valid_sims += 1
+
+    # 返回这个块的计算结果
+    return p1_wins, p2_wins, ties, p1_hand_strength_counts, valid_sims
+
+# --- 核心扑克逻辑模块 ---
+class PokerLogic:
+    def __init__(self):
+        self.evaluator = Evaluator()
+        self.rank_class_to_string_map = {
+            1: "同花顺 (Straight Flush)", 2: "四条 (Four of a Kind)", 3: "葫芦 (Full House)",
+            4: "同花 (Flush)", 5: "顺子 (Straight)", 6: "三条 (Three of a Kind)",
+            7: "两对 (Two Pair)", 8: "一对 (One Pair)", 9: "高牌 (High Card)"
+        }
+        self.master_deck = Deck()
+
+    def _parse_hand_range(self, range_str_list):
+        hand_pairs = []
+        for r_str in filter(None, [s.strip().upper() for s in range_str_list]):
+            try:
+                if len(r_str) == 2 and r_str[0] == r_str[1]:
+                    rank = r_str[0]
+                    suits = 'shdc'
+                    for i in range(len(suits)):
+                        for j in range(i + 1, len(suits)):
+                            card1 = Card.new(f"{rank}{suits[i]}")
+                            card2 = Card.new(f"{rank}{suits[j]}")
+                            hand_pairs.append([card1, card2])
+                elif len(r_str) == 3:
+                    r1, r2, s = r_str[0], r_str[1], r_str[2].lower()
+                    suits = 'shdc'
+                    if s == 's':
+                        for suit in suits:
+                            card1 = Card.new(f"{r1}{suit}")
+                            card2 = Card.new(f"{r2}{suit}")
+                            hand_pairs.append([card1, card2])
+                    elif s == 'o':
+                        for s1 in suits:
+                            for s2 in suits:
+                                if s1 != s2:
+                                    card1 = Card.new(f"{r1}{s1}")
+                                    card2 = Card.new(f"{r2}{s2}")
+                                    hand_pairs.append([card1, card2])
+                elif len(r_str) == 2:
+                    r1, r2 = r_str[0], r_str[1]
+                    suits = 'shdc'
+                    for s1 in suits:
+                        for s2 in suits:
+                            card1 = Card.new(f"{r1}{s1}")
+                            card2 = Card.new(f"{r2}{s2}")
+                            hand_pairs.append([card1, card2])
+            except (ValueError, KeyError) as e:
+                print(f"警告: 忽略无效的范围字符串 '{r_str}': {e}")
+                continue
+        return hand_pairs
+
+    def _split_hand_str(self, s):
+        cards_raw = [s[i:i+2] for i in range(0, len(s), 2)] # ["AS", "AH"]
+        formatted_cards = []
+        for card in cards_raw:
+            if len(card) == 2:
+                formatted_cards.append(card[0].upper() + card[1].lower())
+            else:
+                formatted_cards.append(card) 
+        return formatted_cards # 返回 ["As", "Ah"]
+
+    # ##################################################################
+    # ############### V9：修改: _determine_input_type ##################
+    # ############### (添加了内部冲突检测) #########################
+    # ##################################################################
+    def _determine_input_type(self, p_input):
+        # (V9) p_input 现在是 [s.strip().upper() ...], 但我们在这里再次清理以防万一
+        clean_input = [s.strip().upper() for s in p_input if s.strip()]
+        if not clean_input or clean_input == ['']:
+            return 'random', None
+
+        all_hand_pairs = []
+        specific_hands_in_list = set()
+        range_strings = []
+
+        for item in clean_input:
+            if len(item) == 4:
+                try:
+                    # 验证它是否是一个有效的特定手牌
+                    r1 = item[0].upper()
+                    s1 = item[1].lower()
+                    r2 = item[2].upper()
+                    s2 = item[3].lower()
+                    c1 = Card.new(r1 + s1) # e.g., Card.new("As")
+                    c2 = Card.new(r2 + s2) # e.g., Card.new("Ah")
+                    
+                    # (V9) 关键：立即检查手牌内部冲突 (e.g., "AHAH")
+                    if c1 == c2:
+                        raise ValueError(f"手牌 '{item}' 包含重复的牌。")
+                        
+                    specific_hands_in_list.add(item)
+                except (ValueError, KeyError):
+                    # 不是有效的4字符手牌 (e.g., "ASKA")，当作范围处理
+                    range_strings.append(item)
+            else:
+                range_strings.append(item)
+        
+        # 1. 解析所有特定的手牌
+        for hand_str in specific_hands_in_list:
+            try:
+                cards = self._split_hand_str(hand_str)
+                hand = [Card.new(c) for c in cards]
+                # (V9) 这里的 set 检查是多余的，因为上面已经检查过了，但保留也无妨
+                if len(set(hand)) != 2:
+                    raise ValueError(f"手牌 '{hand_str}' 包含重复的牌。")
+                all_hand_pairs.append(hand)
+            except (ValueError, KeyError) as e:
+                # (V9) 将错误冒泡
+                raise ValueError(f"解析特定手牌 '{hand_str}' 时出错: {e}")
+                
+        # 2. 解析所有范围字符串
+        if range_strings:
+            try:
+                all_hand_pairs.extend(self._parse_hand_range(range_strings))
+            except Exception as e:
+                # _parse_hand_range 内部已经有打印警告，这里防止崩溃
+                print(f"解析范围时出错: {e}")
+
+        if not all_hand_pairs:
+            # (V9) 如果特定手牌和范围都为空或无效
+            if specific_hands_in_list or range_strings:
+                 raise ValueError("无法从输入解析出任何有效手牌。")
+            else:
+                 # 这是 'random' 的情况 (e.g., 输入是 [''])
+                 return 'random', None
+
+        # 3. 去重
+        deduped_set = {tuple(sorted(h)) for h in all_hand_pairs}
+        final_hands_list = [list(t) for t in deduped_set]
+        
+        if not final_hands_list: 
+            raise ValueError("无法解析手牌范围或特定手牌。")
+            
+        # (V9) 决定返回类型
+        # 如果去重后只剩一手牌，并且没有范围字符串，则视为 'hand' 类型
+        if len(final_hands_list) == 1 and not range_strings:
+             return 'hand', final_hands_list
+        else:
+            # 否则，视为 'range' 类型
+            return 'range', final_hands_list
+            
+    # ##################################################################
+    # ############### V10：重写 run_analysis #########################
+    # ##################################################################
+    def run_analysis(self, p1_input_raw, p2_input_raw, board_str, num_simulations=50000, progress_callback=None):
+        
+        # (V9) 辅助函数，用于检查手牌列表与一个“已见卡牌”集合的冲突
+        def check_hand_list(hand_list, seen_cards_set, player_name):
+            """
+            检查手牌列表中的每一张牌是否已在 seen_cards_set 中。
+            如果冲突，则抛出 ValueError。
+            如果不冲突，则将这些牌添加到 seen_cards_set 中。
+            """
+            for hand in hand_list:
+                hand_set = set(hand)
+                if not hand_set.isdisjoint(seen_cards_set):
+                    # 找到冲突的牌
+                    conflicting_card = (hand_set & seen_cards_set).pop()
+                    # treys.Card.int_to_str(c) 可以将 131828 (As) 转换回 "As"
+                    card_str = Card.int_to_str(conflicting_card)
+                    hand_str = [Card.int_to_str(c) for c in hand]
+                    raise ValueError(f"{player_name} 内部冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+            
+            # 如果没有冲突，将所有手牌添加到集合中
+            for hand in hand_list:
+                seen_cards_set.update(hand)
+
+        # (V9) 辅助函数，用于从范围列表中过滤掉与“已见卡牌”冲突的手牌
+        def filter_range(hand_list, seen_cards_set, player_name):
+            """
+            过滤手牌列表，移除任何与 seen_cards_set 冲突的手牌。
+            """
+            valid_hands = []
+            for hand in hand_list:
+                if set(hand).isdisjoint(seen_cards_set):
+                    valid_hands.append(hand)
+            
+            if not valid_hands and hand_list: # 如果列表本来有牌，但全被过滤了
+                raise ValueError(f"{player_name} 的范围与已选卡牌完全冲突。")
+                
+            return valid_hands
+
+        try:
+            # --- (V9) 步骤 1：解析所有输入 ---
+            
+            # 解析公共牌
+            board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
+            if len(set(board)) != len(board): 
+                raise ValueError("公共牌中包含重复的牌。")
+            
+            # 解析 P1 和 P2
+            p1_type, p1_hands = self._determine_input_type(p1_input_raw)
+            p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            
+            # ##################################################################
+            # ############### V10 修改：始终计算 P1 牌力 #####################
+            # ##################################################################
+            calculate_p1_strength = True # 原: p1_type != 'random'
+
+            # --- (V9) 步骤 2：健壮的冲突检测 ---
+            
+            # 全局“已见卡牌”集合
+            seen_cards = set(board)
+
+            # 检查 P1
+            if p1_type == 'hand':
+                # 'hand' 类型意味着列表只有一手牌。我们必须检查它。
+                check_hand_list(p1_hands, seen_cards, "玩家1")
+            elif p1_type == 'range':
+                # 'range' 类型意味着列表有多手牌。我们必须过滤它。
+                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+                # *不* 将 P1 范围添加到 seen_cards，因为 P2 的范围不应该与 P1 的范围冲突
+                # 它们只在模拟运行时才会动态冲突
+
+            # 检查 P2
+            if p2_type == 'hand':
+                # 'hand' 类型必须检查
+                check_hand_list(p2_hands, seen_cards, "玩家2")
+            elif p2_type == 'range':
+                # 'range' 类型必须过滤
+                p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+
+        except ValueError as e:
+            # (V9) 捕获所有解析和冲突错误
+            raise ValueError(f"输入解析错误: {e}")
+
+        # --- (V9) 步骤 3：并行计算设置 (V9-Fix 进度条) ---
+        try:
+            num_cores = max(1, multiprocessing.cpu_count() - 1)
+        except NotImplementedError:
+            num_cores = 1
+            
+        # ##################################################################
+        # ############### V11-Fix: 优化任务分块大小以提升流畅度 #############
+        # ##################################################################
+        
+        # 增加任务数量，使更新更频繁，从而使进度条更流畅
+        TARGET_SMOOTHNESS_TASKS = 150  # 原为100，增加到150
+
+        if num_simulations <= 0:
+            num_tasks, chunk_size, remainder = 0, 0, 0
+        else:
+            # 目标是 150 个任务块，但任务数不能超过总模拟数
+            num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
+            
+            chunk_size = num_simulations // num_tasks
+            remainder = num_simulations % num_tasks
+        
+        # ##################################################################
+        # ###################### 结束修改 #################################
+        # ##################################################################
+        
+        tasks = []
+        master_deck_cards = list(self.master_deck.cards)
+        # (V10) 将 calculate_p1_strength (现在总是 True) 添加到基础参数中
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, board, master_deck_cards, calculate_p1_strength)
+
+        for _ in range(num_tasks):
+            if chunk_size > 0:
+                # (V10) 调整元组索引
+                tasks.append(base_args[:5] + (chunk_size,) + base_args[5:])
+        if remainder > 0:
+            # (V10) 调整元组索引
+            tasks.append(base_args[:5] + (remainder,) + base_args[5:])
+
+        total_p1_wins, total_p2_wins, total_ties = 0, 0, 0
+        total_p1_strength_counts = defaultdict(int)
+        total_valid_sims = 0
+        
+        # --- (V9) 步骤 4：执行 (与 V8 相同) ---
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            completed_sims = 0
+            for result_chunk in pool.imap_unordered(_run_simulation_chunk, tasks):
+                p1_wins, p2_wins, ties, p1_strength_counts, valid_sims = result_chunk
+                
+                total_p1_wins += p1_wins
                 total_p2_wins += p2_wins
                 total_ties += ties
                 for hand, count in p1_strength_counts.items():
