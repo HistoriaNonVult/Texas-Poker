@@ -33,56 +33,61 @@ RANK_CLASS_TO_STRING = {
     9: "High Card"
 }
 
+# --- v8/v9 核心: 模块级牌力缓存 ---
+_RANK_CLASS_CACHE = [0] * 7463
+_CACHE_INITIALIZED = False
+
+def _initialize_rank_cache(evaluator):
+    """初始化牌力缓存表，将函数调用转为 O(1) 数组索引。"""
+    global _CACHE_INITIALIZED
+    if _CACHE_INITIALIZED:
+        return
+    get_rc = evaluator.get_rank_class
+    for r in range(7463):
+        try:
+            _RANK_CLASS_CACHE[r] = get_rc(r)
+        except:
+            pass
+    _CACHE_INITIALIZED = True
+
 def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]], list[str], int, list[str], bool]) -> tuple[int, int, int, dict[str, int], int]:
     """
-    执行扑克模拟任务块 (v6 Ultimate 终极优化版)。
+    执行扑克模拟任务块 (v9 Hybrid Enumeration Edition)。
     
-    修复：使用 Python 内置的小写类型提示 (list, tuple, dict, set)，
-    解决了 NameError: name 'Tuple' is not defined 的问题。
-
-    Args:
-        args: A tuple containing:
-            p1_type (str): 'random' or 'range'.
-            p1_hands (list[list[str]]): List of valid hands for P1.
-            p2_type (str): 'random' or 'range'.
-            p2_hands (list[list[str]]): List of valid hands for P2.
-            board (list[str]): Current board cards.
-            num_sims_chunk (int): Number of simulations to run.
-            master_deck_cards (list[str]): Full deck of cards.
-            calculate_p1_strength (bool): Whether to track P1's hand strength.
-
-    Returns:
-        tuple containing:
-            p1_wins (int): Count of P1 wins.
-            p2_wins (int): Count of P2 wins.
-            ties (int): Count of ties.
-            p1_hand_strength_counts (dict[str, int]): Distribution of P1 hand ranks.
-            valid_sims (int): Number of valid simulations performed.
+    v9 算法级飞跃:
+    1. Hybrid Enumeration (混合枚举): 在 Fixed vs Fixed 场景下，
+       如果剩余可能性的组合数 (Combinations) 小于请求的模拟次数，
+       自动切换为全量穷举。这在转牌/翻牌圈不仅速度极快，且结果 100% 精确。
+    2. Lookup Table: 继承 v8 的 O(1) 查表优化。
     """
     # 解包参数
     p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards, calculate_p1_strength = args
 
-    # 初始化 Evaluator (请确保外部已经定义了 Evaluator 类或导入了它)
+    # 初始化 Evaluator
     evaluator = Evaluator()
+    if calculate_p1_strength and not _CACHE_INITIALIZED:
+        _initialize_rank_cache(evaluator)
     
-    # --- 局部变量缓存 (优化手段) ---
+    # --- 局部变量缓存 ---
     _evaluate = evaluator.evaluate
-    _get_rank_class = evaluator.get_rank_class
     _sample = random.sample
     _choice = random.choice
+    _repeat = repeat
+    _combinations = combinations # itertools.combinations
+    _rank_cache = _RANK_CLASS_CACHE 
     
     # --- 1. 基础数据构建 ---
     board_list: list[str] = list(board)
     board_len: int = len(board_list)
     cards_needed: int = 5 - board_len
     
-    # 构建基础牌库 (排除公共牌)
+    # 构建基础牌库
     board_set: set[str] = set(board_list)
     base_deck_set: set[str] = set(master_deck_cards) - board_set
     base_deck_list: list[str] = list(base_deck_set)
     base_deck_len: int = len(base_deck_list)
     
-    # 结果统计容器 (使用固定长度列表 [0-9] 比字典更快)
+    # 结果统计容器
     p1_wins: int = 0
     p2_wins: int = 0
     p1_rank_counts_list: list[int] = [0] * 10 
@@ -91,151 +96,232 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
     # --- 2. 预处理与手牌过滤 ---
     
     def filter_hands(hands: list[list[str]]) -> list[list[str]]:
-        """过滤掉与公共牌冲突的手牌"""
         if not hands: return []
         return [h for h in hands if set(h).isdisjoint(board_set)]
 
-    # 确定实际可用的手牌范围
     real_p1_hands = filter_hands(p1_hands) if p1_type != 'random' else None
     real_p2_hands = filter_hands(p2_hands) if p2_type != 'random' else None
     
-    # 快速失败检查: 如果某方手牌范围因冲突变为空
     if (p1_type != 'random' and not real_p1_hands) or (p2_type != 'random' and not real_p2_hands):
         return 0, 0, 0, {}, 0
 
-    # 模式标志位
     p1_is_fixed: bool = (p1_type != 'random' and len(real_p1_hands) == 1)
     p2_is_fixed: bool = (p2_type != 'random' and len(real_p2_hands) == 1)
 
     # ==============================================================================
-    # 路径 A: Fixed vs Fixed (确定性对决)
-    # 优化: River 阶段 O(1) 返回; 其他阶段仅需抽公共牌。
+    # 路径 A: Fixed vs Fixed (确定性对决 - 混合枚举优化)
     # ==============================================================================
     if p1_is_fixed and p2_is_fixed:
         p1_hand = real_p1_hands[0]
         p2_hand = real_p2_hands[0]
         
-        # 初始碰撞检查 (每块仅做一次)
         if not set(p1_hand).isdisjoint(set(p2_hand)):
             return 0, 0, 0, {}, 0
             
-        # --- A1: River (所有牌已知) ---
+        # --- A1: River (无需发牌) ---
         if cards_needed == 0:
             p1_score = _evaluate(board_list, p1_hand)
             p2_score = _evaluate(board_list, p2_hand)
             
             if calculate_p1_strength:
-                # 直接将所有模拟次数应用到结果
-                p1_rank_counts_list[_get_rank_class(p1_score)] = num_sims_chunk
+                p1_rank_counts_list[_rank_cache[p1_score]] = num_sims_chunk
             
             if p1_score < p2_score: p1_wins = num_sims_chunk
             elif p2_score < p1_score: p2_wins = num_sims_chunk
             valid_sims = num_sims_chunk
-            # 瞬间返回
             
-        # --- A2: 需要发公共牌 ---
+        # --- A2: 需要发公共牌 (混合枚举核心逻辑) ---
         else:
-            # 创建专属牌库 (排除 P1 和 P2)
             used_cards = set(p1_hand) | set(p2_hand)
             deck_rem = [c for c in base_deck_list if c not in used_cards]
+            n_rem = len(deck_rem)
             
-            for _ in range(num_sims_chunk):
-                board_ext = _sample(deck_rem, cards_needed)
-                run_board = board_list + board_ext
+            # 计算状态空间大小: C(n, k)
+            # 注释已修正，明确 k 值：
+            # 1. Turn 圈 (还需发 River 1 张): C(44, 1) = 44 种情况 -> 极快穷举
+            # 2. Flop 圈 (还需发 Turn+River 2 张): C(45, 2) = 990 种情况 -> 极快穷举
+            # 3. Preflop (还需发 5 张): C(48, 5) ≈ 170万种 -> 状态过大，自动回退到模拟模式
+            try:
+                possible_combos = math.comb(n_rem, cards_needed)
+            except AttributeError: 
+                # Python 3.8 以下兼容
+                def nCr(n, r):
+                    f = math.factorial
+                    return f(n) // f(r) // f(n-r)
+                possible_combos = nCr(n_rem, cards_needed)
+
+            # --- 算法分支判定 ---
+            # 如果穷举所有情况的代价 <= 随机模拟的代价，则选择穷举
+            if possible_combos <= num_sims_chunk:
+                # >>> 穷举模式 (Enumeration Mode) <<<
+                # 结果是精确的，valid_sims 将被重置为实际组合数
                 
-                p1_s = _evaluate(run_board, p1_hand)
-                p2_s = _evaluate(run_board, p2_hand)
+                # 直接生成所有组合迭代器
+                combo_iter = _combinations(deck_rem, cards_needed)
                 
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                if p1_s < p2_s: p1_wins += 1
-                elif p2_s < p1_s: p2_wins += 1
-                valid_sims += 1
+                if calculate_p1_strength:
+                    for board_ext in combo_iter:
+                        # board_ext 是 tuple, 转 list 拼接
+                        # list(board_ext) 开销很小，因为只有 1-5 张
+                        run_board = board_list + list(board_ext)
+                        p1_s = _evaluate(run_board, p1_hand)
+                        p2_s = _evaluate(run_board, p2_hand)
+                        
+                        p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
+                else:
+                    for board_ext in combo_iter:
+                        run_board = board_list + list(board_ext)
+                        p1_s = _evaluate(run_board, p1_hand)
+                        p2_s = _evaluate(run_board, p2_hand)
+                        
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
+                
+                # 标记为有效模拟次数 = 实际组合数
+                valid_sims = possible_combos
+            
+            else:
+                # >>> 模拟模式 (Simulation Mode) <<<
+                # 状态空间太大 (如 Preflop)，继续使用蒙特卡洛
+                loop_iter = _repeat(None, num_sims_chunk)
+                
+                if calculate_p1_strength:
+                    for _ in loop_iter:
+                        board_ext = _sample(deck_rem, cards_needed)
+                        run_board = board_list + board_ext
+                        p1_s = _evaluate(run_board, p1_hand)
+                        p2_s = _evaluate(run_board, p2_hand)
+                        p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
+                else:
+                    for _ in loop_iter:
+                        board_ext = _sample(deck_rem, cards_needed)
+                        run_board = board_list + board_ext
+                        p1_s = _evaluate(run_board, p1_hand)
+                        p2_s = _evaluate(run_board, p2_hand)
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
+                
+                valid_sims = num_sims_chunk
 
     # ==============================================================================
     # 路径 B: Random vs Random (极速模式)
-    # 优化: 一次抽样, 列表切片, 无碰撞检查。
     # ==============================================================================
     elif p1_type == 'random' and p2_type == 'random':
         total_draw = 4 + cards_needed
         if base_deck_len >= total_draw:
+            loop_iter = _repeat(None, num_sims_chunk)
             
-            # --- B1: River (Board 固定) ---
+            # --- B1: River ---
             if cards_needed == 0:
-                for _ in range(num_sims_chunk):
-                    # Unpacking 比切片稍快
-                    c1, c2, c3, c4 = _sample(base_deck_list, 4)
-                    
-                    p1_s = _evaluate(board_list, [c1, c2])
-                    p2_s = _evaluate(board_list, [c3, c4])
-
-                    if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                    if p1_s < p2_s: p1_wins += 1
-                    elif p2_s < p1_s: p2_wins += 1
-                    valid_sims += 1
+                if calculate_p1_strength:
+                    for _ in loop_iter:
+                        c1, c2, c3, c4 = _sample(base_deck_list, 4)
+                        p1_s = _evaluate(board_list, [c1, c2])
+                        p2_s = _evaluate(board_list, [c3, c4])
+                        p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
+                else:
+                    for _ in loop_iter:
+                        c1, c2, c3, c4 = _sample(base_deck_list, 4)
+                        p1_s = _evaluate(board_list, [c1, c2])
+                        p2_s = _evaluate(board_list, [c3, c4])
+                        if p1_s < p2_s: p1_wins += 1
+                        elif p2_s < p1_s: p2_wins += 1
             
             # --- B2: Preflop/Flop/Turn ---
             else:
-                for _ in range(num_sims_chunk):
-                    draw = _sample(base_deck_list, total_draw)
-                    
-                    # 优化: 翻前使用切片避免空列表相加
-                    run_board = board_list + draw[4:] if board_len > 0 else draw[4:]
-                    
-                    p1_s = _evaluate(run_board, draw[0:2])
-                    p2_s = _evaluate(run_board, draw[2:4])
-
-                    if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                    if p1_s < p2_s: p1_wins += 1
-                    elif p2_s < p1_s: p2_wins += 1
-                    valid_sims += 1
+                if board_len == 0:
+                    if calculate_p1_strength:
+                        for _ in loop_iter:
+                            draw = _sample(base_deck_list, total_draw)
+                            run_board = draw[4:] 
+                            p1_s = _evaluate(run_board, draw[0:2])
+                            p2_s = _evaluate(run_board, draw[2:4])
+                            p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                            if p1_s < p2_s: p1_wins += 1
+                            elif p2_s < p1_s: p2_wins += 1
+                    else:
+                        for _ in loop_iter:
+                            draw = _sample(base_deck_list, total_draw)
+                            run_board = draw[4:]
+                            p1_s = _evaluate(run_board, draw[0:2])
+                            p2_s = _evaluate(run_board, draw[2:4])
+                            if p1_s < p2_s: p1_wins += 1
+                            elif p2_s < p1_s: p2_wins += 1
+                else:
+                    if calculate_p1_strength:
+                        for _ in loop_iter:
+                            draw = _sample(base_deck_list, total_draw)
+                            run_board = board_list + draw[4:]
+                            p1_s = _evaluate(run_board, draw[0:2])
+                            p2_s = _evaluate(run_board, draw[2:4])
+                            p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                            if p1_s < p2_s: p1_wins += 1
+                            elif p2_s < p1_s: p2_wins += 1
+                    else:
+                        for _ in loop_iter:
+                            draw = _sample(base_deck_list, total_draw)
+                            run_board = board_list + draw[4:]
+                            p1_s = _evaluate(run_board, draw[0:2])
+                            p2_s = _evaluate(run_board, draw[2:4])
+                            if p1_s < p2_s: p1_wins += 1
+                            elif p2_s < p1_s: p2_wins += 1
+            
+            valid_sims = num_sims_chunk
 
     # ==============================================================================
     # 路径 C: Fixed P1 vs Random P2
-    # 优化: 专属 P2 牌库, 循环内零碰撞检查。
     # ==============================================================================
     elif p1_is_fixed and p2_type == 'random':
         p1_hand = real_p1_hands[0]
-        # 预计算 P2 牌库
         p1_set = set(p1_hand)
         p2_deck_list = [c for c in base_deck_list if c not in p1_set]
         
-        # 缓存 P1 分数 (仅在 River 有效)
         p1_static_score = -1
         p1_static_rank = 0
         if cards_needed == 0:
             p1_static_score = _evaluate(board_list, p1_hand)
-            p1_static_rank = _get_rank_class(p1_static_score)
+            if calculate_p1_strength:
+                p1_static_rank = _rank_cache[p1_static_score] if _CACHE_INITIALIZED else evaluator.get_rank_class(p1_static_score)
         
-        # --- C1: River ---
+        loop_iter = _repeat(None, num_sims_chunk)
+        
         if cards_needed == 0:
-            for _ in range(num_sims_chunk):
+            for _ in loop_iter:
                 p2_hand = _sample(p2_deck_list, 2)
                 p2_s = _evaluate(board_list, p2_hand)
-                
                 if calculate_p1_strength: p1_rank_counts_list[p1_static_rank] += 1
                 if p1_static_score < p2_s: p1_wins += 1
                 elif p2_s < p1_static_score: p2_wins += 1
-                valid_sims += 1
-        
-        # --- C2: 其他阶段 ---
         else:
             total_draw = 2 + cards_needed
-            for _ in range(num_sims_chunk):
-                draw = _sample(p2_deck_list, total_draw)
-                # 切片: 前2张给 P2, 剩余给 Board
-                run_board = board_list + draw[2:]
-                
-                p1_s = _evaluate(run_board, p1_hand)
-                p2_s = _evaluate(run_board, draw[0:2])
-                
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                if p1_s < p2_s: p1_wins += 1
-                elif p2_s < p1_s: p2_wins += 1
-                valid_sims += 1
+            if calculate_p1_strength:
+                for _ in loop_iter:
+                    draw = _sample(p2_deck_list, total_draw)
+                    run_board = board_list + draw[2:]
+                    p1_s = _evaluate(run_board, p1_hand)
+                    p2_s = _evaluate(run_board, draw[0:2])
+                    p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+            else:
+                for _ in loop_iter:
+                    draw = _sample(p2_deck_list, total_draw)
+                    run_board = board_list + draw[2:]
+                    p1_s = _evaluate(run_board, p1_hand)
+                    p2_s = _evaluate(run_board, draw[0:2])
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+
+        valid_sims = num_sims_chunk
 
     # ==============================================================================
     # 路径 D: Random P1 vs Fixed P2
-    # 优化: 与路径 C 对称。
     # ==============================================================================
     elif p1_type == 'random' and p2_is_fixed:
         p2_hand = real_p2_hands[0]
@@ -246,112 +332,133 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
         if cards_needed == 0:
             p2_static_score = _evaluate(board_list, p2_hand)
 
+        loop_iter = _repeat(None, num_sims_chunk)
+
         if cards_needed == 0:
-            for _ in range(num_sims_chunk):
-                p1_hand = _sample(p1_deck_list, 2)
-                p1_s = _evaluate(board_list, p1_hand)
-                
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                if p1_s < p2_static_score: p1_wins += 1
-                elif p2_static_score < p1_s: p2_wins += 1
-                valid_sims += 1
+            if calculate_p1_strength:
+                for _ in loop_iter:
+                    p1_hand = _sample(p1_deck_list, 2)
+                    p1_s = _evaluate(board_list, p1_hand)
+                    p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                    if p1_s < p2_static_score: p1_wins += 1
+                    elif p2_static_score < p1_s: p2_wins += 1
+            else:
+                for _ in loop_iter:
+                    p1_hand = _sample(p1_deck_list, 2)
+                    p1_s = _evaluate(board_list, p1_hand)
+                    if p1_s < p2_static_score: p1_wins += 1
+                    elif p2_static_score < p1_s: p2_wins += 1
         else:
             total_draw = 2 + cards_needed
-            for _ in range(num_sims_chunk):
-                draw = _sample(p1_deck_list, total_draw)
-                run_board = board_list + draw[2:]
-                
-                p1_s = _evaluate(run_board, draw[0:2])
-                p2_s = _evaluate(run_board, p2_hand)
-                
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                if p1_s < p2_s: p1_wins += 1
-                elif p2_s < p1_s: p2_wins += 1
-                valid_sims += 1
+            if calculate_p1_strength:
+                for _ in loop_iter:
+                    draw = _sample(p1_deck_list, total_draw)
+                    run_board = board_list + draw[2:]
+                    p1_s = _evaluate(run_board, draw[0:2])
+                    p2_s = _evaluate(run_board, p2_hand)
+                    p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+            else:
+                for _ in loop_iter:
+                    draw = _sample(p1_deck_list, total_draw)
+                    run_board = board_list + draw[2:]
+                    p1_s = _evaluate(run_board, draw[0:2])
+                    p2_s = _evaluate(run_board, p2_hand)
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+        
+        valid_sims = num_sims_chunk
 
     # ==============================================================================
-    # 路径 E: 复杂范围交互 (Range vs Range)
-    # 优化: 位掩码 (Bitmask) 碰撞检测。
+    # 路径 E: Range vs Range
     # ==============================================================================
     else:
-        # 1. 建立 卡牌 -> 位掩码 的映射
-        # 位运算检测碰撞比集合运算快得多
         card_to_mask = {card: (1 << i) for i, card in enumerate(base_deck_list)}
         
         def prepare_weighted_hands(hands: list[list[str]]) -> list[tuple[list[str], int]]:
-            """预计算手牌范围的位掩码"""
             weighted = []
             for h in hands:
                 mask = 0
                 valid = True
                 for c in h:
-                    if c not in card_to_mask: # 卡牌已被公共牌占用
+                    if c not in card_to_mask:
                         valid = False; break
                     mask |= card_to_mask[c]
                 if valid: weighted.append((h, mask))
             return weighted
 
-        # 准备数据
         p1_data = prepare_weighted_hands(real_p1_hands) if p1_type != 'random' else None
         p2_data = prepare_weighted_hands(real_p2_hands) if p2_type != 'random' else None
         
-        # --- E1: Range vs Range (高频场景) ---
+        loop_iter = _repeat(None, num_sims_chunk)
+
+        # --- E1: Range vs Range ---
         if p1_type != 'random' and p2_type != 'random':
-            for _ in range(num_sims_chunk):
-                p1_h, p1_m = _choice(p1_data)
-                
-                # 位运算拒绝采样
-                while True:
-                    p2_h, p2_m = _choice(p2_data)
-                    if not (p1_m & p2_m): # 快速位与检查
-                        break
-                
-                # 公共牌构建
-                if cards_needed > 0:
-                    # 对于公共牌，因为频率较低，回退到集合运算以保证健壮性
-                    used_set = set(p1_h) | set(p2_h)
-                    deck_rem = [c for c in base_deck_list if c not in used_set]
-                    if len(deck_rem) < cards_needed: continue
-                    board_ext = _sample(deck_rem, cards_needed)
-                    run_board = board_list + board_ext
-                else:
-                    run_board = board_list
+            if calculate_p1_strength:
+                for _ in loop_iter:
+                    p1_h, p1_m = _choice(p1_data)
+                    while True:
+                        p2_h, p2_m = _choice(p2_data)
+                        if not (p1_m & p2_m): break
+                    
+                    if cards_needed > 0:
+                        used_set = set(p1_h) | set(p2_h)
+                        deck_rem = [c for c in base_deck_list if c not in used_set]
+                        if len(deck_rem) < cards_needed: continue
+                        board_ext = _sample(deck_rem, cards_needed)
+                        run_board = board_list + board_ext
+                    else:
+                        run_board = board_list
 
-                p1_s = _evaluate(run_board, p1_h)
-                p2_s = _evaluate(run_board, p2_h)
+                    p1_s = _evaluate(run_board, p1_h)
+                    p2_s = _evaluate(run_board, p2_h)
+                    p1_rank_counts_list[_rank_cache[p1_s]] += 1
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+                    valid_sims += 1
+            else:
+                for _ in loop_iter:
+                    p1_h, p1_m = _choice(p1_data)
+                    while True:
+                        p2_h, p2_m = _choice(p2_data)
+                        if not (p1_m & p2_m): break
+                    
+                    if cards_needed > 0:
+                        used_set = set(p1_h) | set(p2_h)
+                        deck_rem = [c for c in base_deck_list if c not in used_set]
+                        if len(deck_rem) < cards_needed: continue
+                        board_ext = _sample(deck_rem, cards_needed)
+                        run_board = board_list + board_ext
+                    else:
+                        run_board = board_list
 
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
-                if p1_s < p2_s: p1_wins += 1
-                elif p2_s < p1_s: p2_wins += 1
-                valid_sims += 1
+                    p1_s = _evaluate(run_board, p1_h)
+                    p2_s = _evaluate(run_board, p2_h)
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+                    valid_sims += 1
         
-        # --- E2: Range vs Random / Random vs Range ---
+        # --- E2: Range vs Random ---
         else:
-            # 回退到集合检查，因为动态生成随机手牌的掩码开销较大
-            for _ in range(num_sims_chunk):
-                # P1 选择
+            for _ in loop_iter:
                 if p1_type == 'random':
                     p1_hand = _sample(base_deck_list, 2)
                 else:
                     p1_hand = _choice(real_p1_hands) 
                 p1_set = set(p1_hand)
 
-                # P2 选择 (乐观采样)
                 if p2_type == 'random':
                     while True:
                         p2_hand = _sample(base_deck_list, 2)
-                        # 手动展开检查以提速
-                        if p2_hand[0] not in p1_set and p2_hand[1] not in p1_set:
-                            break
+                        if p2_hand[0] not in p1_set and p2_hand[1] not in p1_set: break
                 else:
                     while True:
                         p2_hand = _choice(real_p2_hands)
-                        if set(p2_hand).isdisjoint(p1_set):
-                            break
+                        if set(p2_hand).isdisjoint(p1_set): break
                 
                 p2_set = set(p2_hand)
                 
-                # 公共牌
                 if cards_needed > 0:
                     deck_rem_set = base_deck_set - p1_set - p2_set
                     if len(deck_rem_set) < cards_needed: continue
@@ -363,7 +470,7 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                 p1_s = _evaluate(run_board, p1_hand)
                 p2_s = _evaluate(run_board, p2_hand)
 
-                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if calculate_p1_strength: p1_rank_counts_list[_rank_cache[p1_s]] += 1
                 if p1_s < p2_s: p1_wins += 1
                 elif p2_s < p1_s: p2_wins += 1
                 valid_sims += 1
