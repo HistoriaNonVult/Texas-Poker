@@ -20,78 +20,363 @@ except ImportError:
 # ##################################################################
 # ############### 新增的并行计算工作函数 ###########################
 # ##################################################################
-def _run_simulation_chunk(args):
+# 定义常量
+RANK_CLASS_TO_STRING = {
+    1: "Straight Flush",
+    2: "Four of a Kind",
+    3: "Full House",
+    4: "Flush",
+    5: "Straight",
+    6: "Three of a Kind",
+    7: "Two Pair",
+    8: "One Pair",
+    9: "High Card"
+}
+
+def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]], list[str], int, list[str], bool]) -> tuple[int, int, int, dict[str, int], int]:
     """
-    执行一小块模拟任务。
-    这个函数是独立的，以便被其他进程调用。
+    执行扑克模拟任务块 (v6 Ultimate 终极优化版)。
+    
+    修复：使用 Python 内置的小写类型提示 (list, tuple, dict, set)，
+    解决了 NameError: name 'Tuple' is not defined 的问题。
+
+    Args:
+        args: A tuple containing:
+            p1_type (str): 'random' or 'range'.
+            p1_hands (list[list[str]]): List of valid hands for P1.
+            p2_type (str): 'random' or 'range'.
+            p2_hands (list[list[str]]): List of valid hands for P2.
+            board (list[str]): Current board cards.
+            num_sims_chunk (int): Number of simulations to run.
+            master_deck_cards (list[str]): Full deck of cards.
+            calculate_p1_strength (bool): Whether to track P1's hand strength.
+
+    Returns:
+        tuple containing:
+            p1_wins (int): Count of P1 wins.
+            p2_wins (int): Count of P2 wins.
+            ties (int): Count of ties.
+            p1_hand_strength_counts (dict[str, int]): Distribution of P1 hand ranks.
+            valid_sims (int): Number of valid simulations performed.
     """
-    # 解包传入的参数
-    # (V10) 增加了 calculate_p1_strength 参数
+    # 解包参数
     p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards, calculate_p1_strength = args
 
-    evaluator = Evaluator() # 每个进程都需要创建自己的Evaluator实例
-    rank_class_to_string_map = {
-        1: "同花顺 (Straight Flush)", 2: "四条 (Four of a Kind)", 3: "葫芦 (Full House)",
-        4: "同花 (Flush)", 5: "顺子 (Straight)", 6: "三条 (Three of a Kind)",
-        7: "两对 (Two Pair)", 8: "一对 (One Pair)", 9: "高牌 (High Card)"
-    }
+    # 初始化 Evaluator (请确保外部已经定义了 Evaluator 类或导入了它)
+    evaluator = Evaluator()
+    
+    # --- 局部变量缓存 (优化手段) ---
+    _evaluate = evaluator.evaluate
+    _get_rank_class = evaluator.get_rank_class
+    _sample = random.sample
+    _choice = random.choice
+    
+    # --- 1. 基础数据构建 ---
+    board_list: list[str] = list(board)
+    board_len: int = len(board_list)
+    cards_needed: int = 5 - board_len
+    
+    # 构建基础牌库 (排除公共牌)
+    board_set: set[str] = set(board_list)
+    base_deck_set: set[str] = set(master_deck_cards) - board_set
+    base_deck_list: list[str] = list(base_deck_set)
+    base_deck_len: int = len(base_deck_list)
+    
+    # 结果统计容器 (使用固定长度列表 [0-9] 比字典更快)
+    p1_wins: int = 0
+    p2_wins: int = 0
+    p1_rank_counts_list: list[int] = [0] * 10 
+    valid_sims: int = 0
 
-    # 用于统计这个“块”的结果
-    p1_wins, p2_wins, ties = 0, 0, 0
-    p1_hand_strength_counts = defaultdict(int)
-    valid_sims = 0
-    # (V10) calculate_p1_strength = p1_type != 'random' # <-- 已删除, 从参数传入
+    # --- 2. 预处理与手牌过滤 ---
+    
+    def filter_hands(hands: list[list[str]]) -> list[list[str]]:
+        """过滤掉与公共牌冲突的手牌"""
+        if not hands: return []
+        return [h for h in hands if set(h).isdisjoint(board_set)]
 
-    # 在循环外创建一次牌库，并移除已知的公共牌
-    base_deck = list(master_deck_cards)
-    for card in board:
-        if card in base_deck:
-            base_deck.remove(card)
+    # 确定实际可用的手牌范围
+    real_p1_hands = filter_hands(p1_hands) if p1_type != 'random' else None
+    real_p2_hands = filter_hands(p2_hands) if p2_type != 'random' else None
+    
+    # 快速失败检查: 如果某方手牌范围因冲突变为空
+    if (p1_type != 'random' and not real_p1_hands) or (p2_type != 'random' and not real_p2_hands):
+        return 0, 0, 0, {}, 0
 
-    for _ in range(num_sims_chunk):
-        deck_cards = list(base_deck)
+    # 模式标志位
+    p1_is_fixed: bool = (p1_type != 'random' and len(real_p1_hands) == 1)
+    p2_is_fixed: bool = (p2_type != 'random' and len(real_p2_hands) == 1)
 
-        if p1_type == 'random':
-            if len(deck_cards) < 2: continue
-            p1_hand_sample = random.sample(deck_cards, 2)
+    # ==============================================================================
+    # 路径 A: Fixed vs Fixed (确定性对决)
+    # 优化: River 阶段 O(1) 返回; 其他阶段仅需抽公共牌。
+    # ==============================================================================
+    if p1_is_fixed and p2_is_fixed:
+        p1_hand = real_p1_hands[0]
+        p2_hand = real_p2_hands[0]
+        
+        # 初始碰撞检查 (每块仅做一次)
+        if not set(p1_hand).isdisjoint(set(p2_hand)):
+            return 0, 0, 0, {}, 0
+            
+        # --- A1: River (所有牌已知) ---
+        if cards_needed == 0:
+            p1_score = _evaluate(board_list, p1_hand)
+            p2_score = _evaluate(board_list, p2_hand)
+            
+            if calculate_p1_strength:
+                # 直接将所有模拟次数应用到结果
+                p1_rank_counts_list[_get_rank_class(p1_score)] = num_sims_chunk
+            
+            if p1_score < p2_score: p1_wins = num_sims_chunk
+            elif p2_score < p1_score: p2_wins = num_sims_chunk
+            valid_sims = num_sims_chunk
+            # 瞬间返回
+            
+        # --- A2: 需要发公共牌 ---
         else:
-            p1_hand_sample = random.choice(p1_hands)
-        
-        p1_hand_set = set(p1_hand_sample)
-        if not p1_hand_set.issubset(deck_cards): continue
-        for card in p1_hand_sample: deck_cards.remove(card)
+            # 创建专属牌库 (排除 P1 和 P2)
+            used_cards = set(p1_hand) | set(p2_hand)
+            deck_rem = [c for c in base_deck_list if c not in used_cards]
+            
+            for _ in range(num_sims_chunk):
+                board_ext = _sample(deck_rem, cards_needed)
+                run_board = board_list + board_ext
+                
+                p1_s = _evaluate(run_board, p1_hand)
+                p2_s = _evaluate(run_board, p2_hand)
+                
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_s: p1_wins += 1
+                elif p2_s < p1_s: p2_wins += 1
+                valid_sims += 1
 
-        if p2_type == 'random':
-            if len(deck_cards) < 2: continue
-            p2_hand_sample = random.sample(deck_cards, 2)
+    # ==============================================================================
+    # 路径 B: Random vs Random (极速模式)
+    # 优化: 一次抽样, 列表切片, 无碰撞检查。
+    # ==============================================================================
+    elif p1_type == 'random' and p2_type == 'random':
+        total_draw = 4 + cards_needed
+        if base_deck_len >= total_draw:
+            
+            # --- B1: River (Board 固定) ---
+            if cards_needed == 0:
+                for _ in range(num_sims_chunk):
+                    # Unpacking 比切片稍快
+                    c1, c2, c3, c4 = _sample(base_deck_list, 4)
+                    
+                    p1_s = _evaluate(board_list, [c1, c2])
+                    p2_s = _evaluate(board_list, [c3, c4])
+
+                    if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+                    valid_sims += 1
+            
+            # --- B2: Preflop/Flop/Turn ---
+            else:
+                for _ in range(num_sims_chunk):
+                    draw = _sample(base_deck_list, total_draw)
+                    
+                    # 优化: 翻前使用切片避免空列表相加
+                    run_board = board_list + draw[4:] if board_len > 0 else draw[4:]
+                    
+                    p1_s = _evaluate(run_board, draw[0:2])
+                    p2_s = _evaluate(run_board, draw[2:4])
+
+                    if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                    if p1_s < p2_s: p1_wins += 1
+                    elif p2_s < p1_s: p2_wins += 1
+                    valid_sims += 1
+
+    # ==============================================================================
+    # 路径 C: Fixed P1 vs Random P2
+    # 优化: 专属 P2 牌库, 循环内零碰撞检查。
+    # ==============================================================================
+    elif p1_is_fixed and p2_type == 'random':
+        p1_hand = real_p1_hands[0]
+        # 预计算 P2 牌库
+        p1_set = set(p1_hand)
+        p2_deck_list = [c for c in base_deck_list if c not in p1_set]
+        
+        # 缓存 P1 分数 (仅在 River 有效)
+        p1_static_score = -1
+        p1_static_rank = 0
+        if cards_needed == 0:
+            p1_static_score = _evaluate(board_list, p1_hand)
+            p1_static_rank = _get_rank_class(p1_static_score)
+        
+        # --- C1: River ---
+        if cards_needed == 0:
+            for _ in range(num_sims_chunk):
+                p2_hand = _sample(p2_deck_list, 2)
+                p2_s = _evaluate(board_list, p2_hand)
+                
+                if calculate_p1_strength: p1_rank_counts_list[p1_static_rank] += 1
+                if p1_static_score < p2_s: p1_wins += 1
+                elif p2_s < p1_static_score: p2_wins += 1
+                valid_sims += 1
+        
+        # --- C2: 其他阶段 ---
         else:
-            p2_hand_sample = random.choice(p2_hands)
-        
-        if not p1_hand_set.isdisjoint(p2_hand_sample): continue
-        if not set(p2_hand_sample).issubset(deck_cards): continue
-        for card in p2_hand_sample: deck_cards.remove(card)
-        
-        run_board = list(board)
-        cards_needed = 5 - len(run_board)
-        if len(deck_cards) < cards_needed: continue
-        run_board.extend(random.sample(deck_cards, cards_needed))
+            total_draw = 2 + cards_needed
+            for _ in range(num_sims_chunk):
+                draw = _sample(p2_deck_list, total_draw)
+                # 切片: 前2张给 P2, 剩余给 Board
+                run_board = board_list + draw[2:]
+                
+                p1_s = _evaluate(run_board, p1_hand)
+                p2_s = _evaluate(run_board, draw[0:2])
+                
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_s: p1_wins += 1
+                elif p2_s < p1_s: p2_wins += 1
+                valid_sims += 1
 
-        p1_score = evaluator.evaluate(run_board, p1_hand_sample)
-        p2_score = evaluator.evaluate(run_board, p2_hand_sample)
-
-        # (V10) 现在这个 if 总是为 True
-        if calculate_p1_strength:
-            p1_rank_class = evaluator.get_rank_class(p1_score)
-            if p1_rank_class in rank_class_to_string_map:
-                hand_type_str = rank_class_to_string_map[p1_rank_class]
-                p1_hand_strength_counts[hand_type_str] += 1
+    # ==============================================================================
+    # 路径 D: Random P1 vs Fixed P2
+    # 优化: 与路径 C 对称。
+    # ==============================================================================
+    elif p1_type == 'random' and p2_is_fixed:
+        p2_hand = real_p2_hands[0]
+        p2_set = set(p2_hand)
+        p1_deck_list = [c for c in base_deck_list if c not in p2_set]
         
-        if p1_score < p2_score: p1_wins += 1
-        elif p2_score < p1_score: p2_wins += 1
-        else: ties += 1
-        valid_sims += 1
+        p2_static_score = -1
+        if cards_needed == 0:
+            p2_static_score = _evaluate(board_list, p2_hand)
 
-    # 返回这个块的计算结果
+        if cards_needed == 0:
+            for _ in range(num_sims_chunk):
+                p1_hand = _sample(p1_deck_list, 2)
+                p1_s = _evaluate(board_list, p1_hand)
+                
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_static_score: p1_wins += 1
+                elif p2_static_score < p1_s: p2_wins += 1
+                valid_sims += 1
+        else:
+            total_draw = 2 + cards_needed
+            for _ in range(num_sims_chunk):
+                draw = _sample(p1_deck_list, total_draw)
+                run_board = board_list + draw[2:]
+                
+                p1_s = _evaluate(run_board, draw[0:2])
+                p2_s = _evaluate(run_board, p2_hand)
+                
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_s: p1_wins += 1
+                elif p2_s < p1_s: p2_wins += 1
+                valid_sims += 1
+
+    # ==============================================================================
+    # 路径 E: 复杂范围交互 (Range vs Range)
+    # 优化: 位掩码 (Bitmask) 碰撞检测。
+    # ==============================================================================
+    else:
+        # 1. 建立 卡牌 -> 位掩码 的映射
+        # 位运算检测碰撞比集合运算快得多
+        card_to_mask = {card: (1 << i) for i, card in enumerate(base_deck_list)}
+        
+        def prepare_weighted_hands(hands: list[list[str]]) -> list[tuple[list[str], int]]:
+            """预计算手牌范围的位掩码"""
+            weighted = []
+            for h in hands:
+                mask = 0
+                valid = True
+                for c in h:
+                    if c not in card_to_mask: # 卡牌已被公共牌占用
+                        valid = False; break
+                    mask |= card_to_mask[c]
+                if valid: weighted.append((h, mask))
+            return weighted
+
+        # 准备数据
+        p1_data = prepare_weighted_hands(real_p1_hands) if p1_type != 'random' else None
+        p2_data = prepare_weighted_hands(real_p2_hands) if p2_type != 'random' else None
+        
+        # --- E1: Range vs Range (高频场景) ---
+        if p1_type != 'random' and p2_type != 'random':
+            for _ in range(num_sims_chunk):
+                p1_h, p1_m = _choice(p1_data)
+                
+                # 位运算拒绝采样
+                while True:
+                    p2_h, p2_m = _choice(p2_data)
+                    if not (p1_m & p2_m): # 快速位与检查
+                        break
+                
+                # 公共牌构建
+                if cards_needed > 0:
+                    # 对于公共牌，因为频率较低，回退到集合运算以保证健壮性
+                    used_set = set(p1_h) | set(p2_h)
+                    deck_rem = [c for c in base_deck_list if c not in used_set]
+                    if len(deck_rem) < cards_needed: continue
+                    board_ext = _sample(deck_rem, cards_needed)
+                    run_board = board_list + board_ext
+                else:
+                    run_board = board_list
+
+                p1_s = _evaluate(run_board, p1_h)
+                p2_s = _evaluate(run_board, p2_h)
+
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_s: p1_wins += 1
+                elif p2_s < p1_s: p2_wins += 1
+                valid_sims += 1
+        
+        # --- E2: Range vs Random / Random vs Range ---
+        else:
+            # 回退到集合检查，因为动态生成随机手牌的掩码开销较大
+            for _ in range(num_sims_chunk):
+                # P1 选择
+                if p1_type == 'random':
+                    p1_hand = _sample(base_deck_list, 2)
+                else:
+                    p1_hand = _choice(real_p1_hands) 
+                p1_set = set(p1_hand)
+
+                # P2 选择 (乐观采样)
+                if p2_type == 'random':
+                    while True:
+                        p2_hand = _sample(base_deck_list, 2)
+                        # 手动展开检查以提速
+                        if p2_hand[0] not in p1_set and p2_hand[1] not in p1_set:
+                            break
+                else:
+                    while True:
+                        p2_hand = _choice(real_p2_hands)
+                        if set(p2_hand).isdisjoint(p1_set):
+                            break
+                
+                p2_set = set(p2_hand)
+                
+                # 公共牌
+                if cards_needed > 0:
+                    deck_rem_set = base_deck_set - p1_set - p2_set
+                    if len(deck_rem_set) < cards_needed: continue
+                    board_ext = _sample(list(deck_rem_set), cards_needed)
+                    run_board = board_list + board_ext
+                else:
+                    run_board = board_list
+                
+                p1_s = _evaluate(run_board, p1_hand)
+                p2_s = _evaluate(run_board, p2_hand)
+
+                if calculate_p1_strength: p1_rank_counts_list[_get_rank_class(p1_s)] += 1
+                if p1_s < p2_s: p1_wins += 1
+                elif p2_s < p1_s: p2_wins += 1
+                valid_sims += 1
+
+    # --- 3. 结果格式化 ---
+    ties: int = valid_sims - p1_wins - p2_wins
+    
+    p1_hand_strength_counts: dict[str, int] = {}
+    for rank_val in range(1, 10):
+        count = p1_rank_counts_list[rank_val]
+        if count: 
+            p1_hand_strength_counts[RANK_CLASS_TO_STRING.get(rank_val)] = count
+
     return p1_wins, p2_wins, ties, p1_hand_strength_counts, valid_sims
 
 # --- 核心扑克逻辑模块 ---
@@ -883,7 +1168,8 @@ class SuitSelectorWindow(tk.Toplevel):
                     if not is_selected:
                         btn.config(bg=self.BTN_BG_NORMAL)
             
-            btn.bind("<Button-1>", on_click)
+            btn.bind("<Button-1>", on_click)  # 左键
+            btn.bind("<Button-3>", on_click)  # 右键
             btn.bind("<Enter>", on_enter)
             btn.bind("<Leave>", on_leave)
             
