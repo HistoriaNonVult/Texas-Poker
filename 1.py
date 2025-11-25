@@ -33,9 +33,11 @@ RANK_CLASS_TO_STRING = {
     9: "High Card"
 }
 
-# --- v8/v9 核心: 模块级牌力缓存 ---
+# --- v8/v9 核心: 模块级牌力缓存 + 全局进程池 ---
 _RANK_CLASS_CACHE = [0] * 7463
 _CACHE_INITIALIZED = False
+_GLOBAL_POOL = None  # 全局进程池，复用以减少启动开销
+_POOL_SIZE = None    # 记录进程数
 
 def _initialize_rank_cache(evaluator):
     """初始化牌力缓存表，将函数调用转为 O(1) 数组索引。"""
@@ -49,6 +51,18 @@ def _initialize_rank_cache(evaluator):
         except:
             pass
     _CACHE_INITIALIZED = True
+
+def _get_or_create_pool(num_cores):
+    """获取或创建全局进程池，避免重复创建的开销。"""
+    global _GLOBAL_POOL, _POOL_SIZE
+    if _GLOBAL_POOL is None or _POOL_SIZE != num_cores:
+        # 如果有旧的进程池，先关闭
+        if _GLOBAL_POOL is not None:
+            _GLOBAL_POOL.close()
+            _GLOBAL_POOL.join()
+        _GLOBAL_POOL = multiprocessing.Pool(processes=num_cores)
+        _POOL_SIZE = num_cores
+    return _GLOBAL_POOL
 
 def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]], list[str], int, list[str], bool]) -> tuple[int, int, int, dict[str, int], int]:
     """
