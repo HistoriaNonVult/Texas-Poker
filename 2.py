@@ -21,7 +21,7 @@ class EquityHeatmapApp(tk.Tk):
         super().__init__()
         self.title("德州扑克胜率热力图")
         self.geometry("900x800") 
-        self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\Blanket.ico')  
+        self.iconbitmap(os.path.join(os.path.dirname(__file__), "Blanket.ico"))
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
         self.configure(bg='#2e2e2e')

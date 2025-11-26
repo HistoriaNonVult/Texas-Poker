@@ -9,6 +9,7 @@ import math # 引入 math 模块以使用缓动函数
 import webbrowser # 新增: 用于打开网页链接
 from hand_strength_data import HAND_TIERS # 导入起手牌强度数据
 from strength_chart_window import StrengthChartWindow # 导入起手牌强度图表窗口
+import os
 
 # 建议安装 'treys' 库: pip install treys
 try:
@@ -876,7 +877,7 @@ class SuitSelectorWindow(tk.Toplevel):
 
         # (V7) 尝试设置图标
         try:
-            self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+            self.iconbitmap(os.path.join(os.path.dirname(__file__), "TexasPoker.ico"))
         except tk.TclError:
             print("警告: 找不到图标文件 'TexasPoker.ico'。将使用默认图标。")
         
@@ -1414,7 +1415,7 @@ class PokerApp(tk.Tk):
         window_height = 960
         try:
             # 尝试设置图标
-            self.iconbitmap(r'C:\Users\wangz\Desktop\Texas_Poker\TexasPoker.ico')  
+            self.iconbitmap(os.path.join(os.path.dirname(__file__), "TexasPoker.ico"))
         except tk.TclError:
             print("警告: 找不到图标文件 'TexasPoker.ico'。将使用默认图标。")
 
