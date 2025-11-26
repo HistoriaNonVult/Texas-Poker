@@ -723,28 +723,30 @@ class PokerLogic:
             # ##################################################################
             calculate_p1_strength = True # 原: p1_type != 'random'
 
-            # --- (V9) 步骤 2：健壮的冲突检测 ---
+            # --- (V9) 步骤 2：健壮的冲突检测 (修复死锁版) ---
             
             # 全局“已见卡牌”集合
             seen_cards = set(board)
 
-            # 检查 P1
+            # >>>>>>> 修复开始：优先处理 'hand' (特定手牌)，再处理 'range' (范围) <<<<<<<
+            
+            # 第一轮：先注册所有“确定”的手牌 (Fixed Hands)
+            # 这样可以确保如果 P2 拿了 AhKh，AhKh 就会进入 seen_cards
             if p1_type == 'hand':
-                # 'hand' 类型意味着列表只有一手牌。我们必须检查它。
                 check_hand_list(p1_hands, seen_cards, "玩家1")
-            elif p1_type == 'range':
-                # 'range' 类型意味着列表有多手牌。我们必须过滤它。
-                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
-                # *不* 将 P1 范围添加到 seen_cards，因为 P2 的范围不应该与 P1 的范围冲突
-                # 它们只在模拟运行时才会动态冲突
-
-            # 检查 P2
+            
             if p2_type == 'hand':
-                # 'hand' 类型必须检查
                 check_hand_list(p2_hands, seen_cards, "玩家2")
-            elif p2_type == 'range':
-                # 'range' 类型必须过滤
+
+            # 第二轮：根据已知的死牌，过滤“范围” (Ranges)
+            # 如果 P2 拿了 AhKh，这里 P1 的 AKs 范围就会自动剔除 AhKh，避免死锁
+            if p1_type == 'range':
+                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+                
+            if p2_type == 'range':
                 p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+                
+            # >>>>>>> 修复结束 <<<<<<<
 
         except ValueError as e:
             # (V9) 捕获所有解析和冲突错误
