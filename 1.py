@@ -77,6 +77,8 @@ def _get_or_create_pool(num_cores):
 def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]], list[str], int, list[str], bool]) -> tuple[int, int, int, dict[str, int], int]:
     """
     执行扑克模拟任务块 (v9 Hybrid Enumeration Edition)。
+    【保留优化 + 修复死锁版】
+    保留了混合枚举、位运算加速、全局缓存等优化，仅增加了防死锁的重试机制。
     """
     # 解包参数
     p1_type, p1_hands, p2_type, p2_hands, board, num_sims_chunk, master_deck_cards, calculate_p1_strength = args
@@ -84,13 +86,12 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
     # 初始化 Evaluator
     evaluator = Evaluator()
     
-    # 修复BUG：如果需要计算牌力，必须确保缓存已正确初始化
-    # 如果标志为 False 或者 缓存内容为空(索引1为0)，则强制重新初始化
+    # 确保缓存已正确初始化
     if calculate_p1_strength:
         if not _CACHE_INITIALIZED or _RANK_CLASS_CACHE[1] == 0:
             _initialize_rank_cache(evaluator)
     
-    # --- 局部变量缓存 ---
+    # --- 局部变量缓存 (优化调用速度) ---
     _evaluate = evaluator.evaluate
     _sample = random.sample
     _choice = random.choice
@@ -101,21 +102,12 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     _rank_cache = _RANK_CLASS_CACHE 
     
-    # ##################################################################
-    # ########## 关键修复: 安全的牌力获取函数 (Safe Fallback) ##########
-    # ##################################################################
+    # 安全查表函数
     def _get_rc_safe(score):
-        """
-        安全地获取牌力类别。
-        优先查表；如果查表结果为0（说明缓存未命中或初始化失败），
-        则回退调用 evaluator 实时计算。
-        这解决了牌力分布为空的问题。
-        """
         rc = _rank_cache[score]
         if rc == 0:
             return evaluator.get_rank_class(score)
         return rc
-    # ##################################################################
     
     # --- 1. 基础数据构建 ---
     board_list: list[str] = list(board)
@@ -151,6 +143,7 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     # ==============================================================================
     # 路径 A: Fixed vs Fixed (确定性对决 - 混合枚举优化)
+    # 【优化保留】：如果组合数少，走穷举；否则走模拟。
     # ==============================================================================
     if p1_is_fixed and p2_is_fixed:
         p1_hand = real_p1_hands[0]
@@ -165,7 +158,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
             p2_score = _evaluate(board_list, p2_hand)
             
             if calculate_p1_strength:
-                # 修复: 使用 _get_rc_safe
                 p1_rank_counts_list[_get_rc_safe(p1_score)] = num_sims_chunk
             
             if p1_score < p2_score: p1_wins = num_sims_chunk
@@ -181,7 +173,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
             try:
                 possible_combos = math.comb(n_rem, cards_needed)
             except AttributeError: 
-                # Python 3.8 以下兼容
                 def nCr(n, r):
                     f = math.factorial
                     return f(n) // f(r) // f(n-r)
@@ -198,7 +189,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                         p1_s = _evaluate(run_board, p1_hand)
                         p2_s = _evaluate(run_board, p2_hand)
                         
-                        # 修复: 使用 _get_rc_safe
                         p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                         if p1_s < p2_s: p1_wins += 1
                         elif p2_s < p1_s: p2_wins += 1
@@ -223,7 +213,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                         run_board = board_list + board_ext
                         p1_s = _evaluate(run_board, p1_hand)
                         p2_s = _evaluate(run_board, p2_hand)
-                        # 修复: 使用 _get_rc_safe
                         p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                         if p1_s < p2_s: p1_wins += 1
                         elif p2_s < p1_s: p2_wins += 1
@@ -240,6 +229,7 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     # ==============================================================================
     # 路径 B: Random vs Random (极速模式)
+    # 【优化保留】：直接从 deck sample 4张，不涉及复杂冲突检测，一般不会死锁。
     # ==============================================================================
     elif p1_type == 'random' and p2_type == 'random':
         total_draw = 4 + cards_needed
@@ -253,7 +243,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                         c1, c2, c3, c4 = _sample(base_deck_list, 4)
                         p1_s = _evaluate(board_list, [c1, c2])
                         p2_s = _evaluate(board_list, [c3, c4])
-                        # 修复: 使用 _get_rc_safe
                         p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                         if p1_s < p2_s: p1_wins += 1
                         elif p2_s < p1_s: p2_wins += 1
@@ -274,7 +263,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                             run_board = draw[4:] 
                             p1_s = _evaluate(run_board, draw[0:2])
                             p2_s = _evaluate(run_board, draw[2:4])
-                            # 修复: 使用 _get_rc_safe
                             p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                             if p1_s < p2_s: p1_wins += 1
                             elif p2_s < p1_s: p2_wins += 1
@@ -293,7 +281,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                             run_board = board_list + draw[4:]
                             p1_s = _evaluate(run_board, draw[0:2])
                             p2_s = _evaluate(run_board, draw[2:4])
-                            # 修复: 使用 _get_rc_safe
                             p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                             if p1_s < p2_s: p1_wins += 1
                             elif p2_s < p1_s: p2_wins += 1
@@ -310,6 +297,7 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     # ==============================================================================
     # 路径 C: Fixed P1 vs Random P2
+    # 【优化保留】：p2_deck_list 是预先过滤的，因此不会有死锁，保留原逻辑。
     # ==============================================================================
     elif p1_is_fixed and p2_type == 'random':
         p1_hand = real_p1_hands[0]
@@ -321,7 +309,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
         if cards_needed == 0:
             p1_static_score = _evaluate(board_list, p1_hand)
             if calculate_p1_strength:
-                # 修复: 使用 _get_rc_safe
                 p1_static_rank = _get_rc_safe(p1_static_score)
         
         loop_iter = _repeat(None, num_sims_chunk)
@@ -341,7 +328,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                     run_board = board_list + draw[2:]
                     p1_s = _evaluate(run_board, p1_hand)
                     p2_s = _evaluate(run_board, draw[0:2])
-                    # 修复: 使用 _get_rc_safe
                     p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                     if p1_s < p2_s: p1_wins += 1
                     elif p2_s < p1_s: p2_wins += 1
@@ -358,6 +344,7 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     # ==============================================================================
     # 路径 D: Random P1 vs Fixed P2
+    # 【优化保留】：同路径 C，逻辑是对称的，无死锁风险。
     # ==============================================================================
     elif p1_type == 'random' and p2_is_fixed:
         p2_hand = real_p2_hands[0]
@@ -375,7 +362,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                 for _ in loop_iter:
                     p1_hand = _sample(p1_deck_list, 2)
                     p1_s = _evaluate(board_list, p1_hand)
-                    # 修复: 使用 _get_rc_safe
                     p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                     if p1_s < p2_static_score: p1_wins += 1
                     elif p2_static_score < p1_s: p2_wins += 1
@@ -393,7 +379,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                     run_board = board_list + draw[2:]
                     p1_s = _evaluate(run_board, draw[0:2])
                     p2_s = _evaluate(run_board, p2_hand)
-                    # 修复: 使用 _get_rc_safe
                     p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                     if p1_s < p2_s: p1_wins += 1
                     elif p2_s < p1_s: p2_wins += 1
@@ -410,10 +395,12 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     # ==============================================================================
     # 路径 E: Range vs Range
+    # 【修复重点】：保留位运算优化 (Bitmasking)，但增加重试上限，防止 "Ac" vs "AcX" 死锁。
     # ==============================================================================
     else:
         card_to_mask = {card: (1 << i) for i, card in enumerate(base_deck_list)}
         
+        # 预计算位掩码 (优化保留)
         def prepare_weighted_hands(hands: list[list[str]]) -> list[tuple[list[str], int]]:
             weighted = []
             for h in hands:
@@ -435,10 +422,25 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
         if p1_type != 'random' and p2_type != 'random':
             if calculate_p1_strength:
                 for _ in loop_iter:
-                    p1_h, p1_m = _choice(p1_data)
-                    while True:
-                        p2_h, p2_m = _choice(p2_data)
-                        if not (p1_m & p2_m): break
+                    # >>> 修复开始：使用有限重试替代无限 while True <<<
+                    valid_matchup = False
+                    for _ in range(20): # 尝试 20 次选取 P1
+                        p1_h, p1_m = _choice(p1_data)
+                        
+                        # 尝试为这个 P1 找一个合法的 P2
+                        p2_found = False
+                        for _ in range(20): # 尝试 20 次选取 P2
+                            p2_h, p2_m = _choice(p2_data)
+                            if not (p1_m & p2_m): # 位运算快速冲突检测
+                                p2_found = True
+                                break
+                        
+                        if p2_found:
+                            valid_matchup = True
+                            break
+                    # >>> 修复结束 <<<
+
+                    if not valid_matchup: continue # 如果尝试多次仍无法生成合法对局，跳过此次
                     
                     if cards_needed > 0:
                         used_set = set(p1_h) | set(p2_h)
@@ -451,18 +453,28 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
                     p1_s = _evaluate(run_board, p1_h)
                     p2_s = _evaluate(run_board, p2_h)
-                    # 修复: 使用 _get_rc_safe
                     p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                     if p1_s < p2_s: p1_wins += 1
                     elif p2_s < p1_s: p2_wins += 1
                     valid_sims += 1
             else:
+                # 不计算牌力版本 (逻辑同上)
                 for _ in loop_iter:
-                    p1_h, p1_m = _choice(p1_data)
-                    while True:
-                        p2_h, p2_m = _choice(p2_data)
-                        if not (p1_m & p2_m): break
+                    valid_matchup = False
+                    for _ in range(20):
+                        p1_h, p1_m = _choice(p1_data)
+                        p2_found = False
+                        for _ in range(20):
+                            p2_h, p2_m = _choice(p2_data)
+                            if not (p1_m & p2_m):
+                                p2_found = True
+                                break
+                        if p2_found:
+                            valid_matchup = True
+                            break
                     
+                    if not valid_matchup: continue
+
                     if cards_needed > 0:
                         used_set = set(p1_h) | set(p2_h)
                         deck_rem = [c for c in base_deck_list if c not in used_set]
@@ -480,21 +492,38 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
         
         # --- E2: Range vs Random ---
         else:
+            # 这里的逻辑也需要加锁保护
             for _ in loop_iter:
-                if p1_type == 'random':
-                    p1_hand = _sample(base_deck_list, 2)
-                else:
-                    p1_hand = _choice(real_p1_hands) 
-                p1_set = set(p1_hand)
+                valid_matchup = False
+                
+                # >>> 修复开始：带重试的选取逻辑 <<<
+                for _ in range(50):
+                    # 1. 选 P1
+                    if p1_type == 'random':
+                        p1_hand = _sample(base_deck_list, 2)
+                    else:
+                        p1_hand = _choice(real_p1_hands) 
+                    p1_set = set(p1_hand)
 
-                if p2_type == 'random':
-                    while True:
-                        p2_hand = _sample(base_deck_list, 2)
-                        if p2_hand[0] not in p1_set and p2_hand[1] not in p1_set: break
-                else:
-                    while True:
-                        p2_hand = _choice(real_p2_hands)
-                        if set(p2_hand).isdisjoint(p1_set): break
+                    # 2. 选 P2
+                    p2_found = False
+                    if p2_type == 'random':
+                        for _ in range(20):
+                            p2_hand = _sample(base_deck_list, 2)
+                            if p2_hand[0] not in p1_set and p2_hand[1] not in p1_set: 
+                                p2_found = True; break
+                    else:
+                        for _ in range(20):
+                            p2_hand = _choice(real_p2_hands)
+                            if set(p2_hand).isdisjoint(p1_set): 
+                                p2_found = True; break
+                    
+                    if p2_found:
+                        valid_matchup = True
+                        break
+                # >>> 修复结束 <<<
+
+                if not valid_matchup: continue
                 
                 p2_set = set(p2_hand)
                 
@@ -509,7 +538,6 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
                 p1_s = _evaluate(run_board, p1_hand)
                 p2_s = _evaluate(run_board, p2_hand)
 
-                # 修复: 使用 _get_rc_safe
                 if calculate_p1_strength: p1_rank_counts_list[_get_rc_safe(p1_s)] += 1
                 if p1_s < p2_s: p1_wins += 1
                 elif p2_s < p1_s: p2_wins += 1
