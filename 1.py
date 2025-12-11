@@ -1923,9 +1923,9 @@ class PokerApp(tk.Tk):
     def _create_strength_display(self, parent_frame):
         strength_frame = ttk.LabelFrame(parent_frame, text="玩家1 牌力分布")
         strength_frame.pack(fill='both', expand=True, pady=10)
-        cols = ('牌型', '概率'); self.strength_tree = ttk.Treeview(strength_frame, columns=cols, show='headings', height=9)
-        self.strength_tree.heading('牌型', text='牌型 (Hand Rank)'); self.strength_tree.heading('概率', text='概率 (Probability)')
-        self.strength_tree.column('牌型', width=200, anchor='center'); self.strength_tree.column('概率', width=150, anchor='e')
+        cols = ('牌型', '进度条', '概率'); self.strength_tree = ttk.Treeview(strength_frame, columns=cols, show='headings', height=9)
+        self.strength_tree.heading('牌型', text='牌型 (Hand Rank)'); self.strength_tree.heading('进度条', text='分布可视化'); self.strength_tree.heading('概率', text='概率 (Probability)')
+        self.strength_tree.column('牌型', width=150, anchor='center'); self.strength_tree.column('进度条', width=220, anchor='center'); self.strength_tree.column('概率', width=100, anchor='e')
         self.strength_tree.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_range_selector(self, parent_frame):
@@ -2308,6 +2308,15 @@ class PokerApp(tk.Tk):
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         self._reset_equity_display()
                 
+    def _create_probability_bar(self, probability):
+        """为给定的概率生成一个可视化进度条字符串"""
+        # probability 是 0-100 的数值
+        bar_length = 80  # 进度条的字符长度
+        filled = int(bar_length * probability / 100)
+        # 使用竖线 '|' 作为已填充字符，未填充部分使用空格显示为空白
+        bar = '|' * filled + ' ' * (bar_length - filled)
+        return bar
+
     def _reset_equity_display(self):
         # (恢复) 重置标准 TTK 进度条
         self.p1_win_var.set("N/A"); self.p1_win_bar['value'] = 0
@@ -2383,10 +2392,12 @@ class PokerApp(tk.Tk):
                     all_hand_types = sorted(hand_rank_order.keys(), key=lambda x: hand_rank_order[x])
                     for hand_name in all_hand_types:
                         prob = strength.get(hand_name, 0.0)
-                        if prob > 1e-5: self.strength_tree.insert('', tk.END, values=(hand_name, f"{prob:.2f}%"))
+                        if prob > 1e-5: 
+                            progress_bar = self._create_probability_bar(prob)
+                            self.strength_tree.insert('', tk.END, values=(hand_name, progress_bar, f"{prob:.2f}%"))
                 # (V10) 这个 else 永远不会被触发了，但保留也无妨
                 else:
-                    self.strength_tree.insert('', tk.END, values=("(请输入玩家1手牌/范围)", "N/A"))
+                    self.strength_tree.insert('', tk.END, values=("(请输入玩家1手牌/范围)", "", "N/A"))
             except Exception as e:
                 # (V9) 这里是捕获和显示错误的地方
                 messagebox.showerror("分析出错", f"错误: {e}")
