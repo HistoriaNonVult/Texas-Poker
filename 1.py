@@ -1925,7 +1925,7 @@ class PokerApp(tk.Tk):
         strength_frame.pack(fill='both', expand=True, pady=10)
         cols = ('牌型', '进度条', '概率'); self.strength_tree = ttk.Treeview(strength_frame, columns=cols, show='headings', height=9)
         self.strength_tree.heading('牌型', text='牌型'); self.strength_tree.heading('进度条', text='分布可视化'); self.strength_tree.heading('概率', text='概率')
-        self.strength_tree.column('牌型', width=150, anchor='center'); self.strength_tree.column('进度条', width=220, anchor='center'); self.strength_tree.column('概率', width=100, anchor='e')
+        self.strength_tree.column('牌型', width=150, anchor='center'); self.strength_tree.column('进度条', width=190, anchor='center'); self.strength_tree.column('概率', width=100, anchor='e')
         self.strength_tree.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_range_selector(self, parent_frame):
