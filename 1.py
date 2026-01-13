@@ -1242,6 +1242,7 @@ class PokerApp(tk.Tk):
         self._configure_styles()
         self._create_widgets()
         self.bind_all('<KeyPress>', self._handle_window_movement)
+        self.bind_all('<Return>', self._on_enter_key_pressed)
         
         self.deiconify()
         self.after(10, self._start_fade_in)
@@ -1272,6 +1273,12 @@ class PokerApp(tk.Tk):
         elif key == 'd' or key == 'right': x += move_step
         else: return
         self.geometry(f"+{x}+{y}")
+
+    def _on_enter_key_pressed(self, event):
+        """处理 Enter 键按下事件，触发开始分析"""
+        # 如果分析按钮处于可用状态，则触发分析
+        if str(self.calc_button['state']) != 'disabled':
+            self.run_analysis_thread()
 
     def _open_strength_chart(self):
         if StrengthChartWindow is None:
@@ -1618,9 +1625,15 @@ class PokerApp(tk.Tk):
         self.p2_radio_btn.config(bg=self.P2_COLOR if player_num == 2 else '#4a4a4a')
 
     def _on_board_card_select(self, card_str):
-        if len(self.board_cards) < 5 and card_str not in self.board_cards:
+        if card_str in self.board_cards:
+            # 如果牌已被选中，则取消选择
+            self.board_cards.remove(card_str)
+            self.board_card_buttons[card_str].config(state='normal', relief='raised', bg='#d0d0d0')
+            self.board_display_var.set(f"已选公共牌: {' '.join(self.board_cards)}" if self.board_cards else "已选公共牌: ")
+        elif len(self.board_cards) < 5:
+            # 如果牌未被选中且公共牌少于5张，则添加
             self.board_cards.append(card_str)
-            self.board_card_buttons[card_str].config(state='disabled', relief='sunken', bg='#555')
+            self.board_card_buttons[card_str].config(state='normal', relief='sunken', bg='#555')
             self.board_display_var.set(f"已选公共牌: {' '.join(self.board_cards)}")
 
     def _reset_board_selector(self):
