@@ -1201,8 +1201,10 @@ class PokerApp(tk.Tk):
         self.title("德州扑克分析工具")
         window_width = 1370
         window_height = 960
+        
+        # 获取图标路径（支持开发环境和 PyInstaller 打包环境）
+        self._icon_path = None
         try:
-            # 支持开发环境和 PyInstaller 打包环境
             if getattr(sys, 'frozen', False):
                 # 打包后的环境
                 base_path = sys._MEIPASS
@@ -1211,9 +1213,12 @@ class PokerApp(tk.Tk):
                 base_path = os.path.dirname(os.path.abspath(__file__))
             icon_path = os.path.join(base_path, "TexasPoker.ico")
             if os.path.exists(icon_path):
+                self._icon_path = icon_path
+                # 设置窗口图标
+                self.iconbitmap(default=icon_path)
                 self.iconbitmap(icon_path)
-        except (tk.TclError, Exception):
-            pass
+        except (tk.TclError, Exception) as e:
+            print(f"图标加载警告: {e}")
 
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -1254,7 +1259,19 @@ class PokerApp(tk.Tk):
         self.bind_all('<Return>', self._on_enter_key_pressed)
         
         self.deiconify()
+        # 窗口显示后再次确保图标正确设置
+        if self._icon_path:
+            self.after(100, lambda: self._apply_icon())
         self.after(10, self._start_fade_in)
+
+    def _apply_icon(self):
+        """在窗口显示后重新应用图标"""
+        try:
+            if self._icon_path and os.path.exists(self._icon_path):
+                self.iconbitmap(default=self._icon_path)
+                self.iconbitmap(self._icon_path)
+        except (tk.TclError, Exception):
+            pass
 
     def _on_app_close(self):
         global _GLOBAL_POOL
