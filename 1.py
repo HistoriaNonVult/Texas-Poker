@@ -1202,8 +1202,17 @@ class PokerApp(tk.Tk):
         window_width = 1370
         window_height = 960
         try:
-            self.iconbitmap(os.path.join(os.path.dirname(__file__), "TexasPoker.ico"))
-        except tk.TclError:
+            # 支持开发环境和 PyInstaller 打包环境
+            if getattr(sys, 'frozen', False):
+                # 打包后的环境
+                base_path = sys._MEIPASS
+            else:
+                # 开发环境
+                base_path = os.path.dirname(os.path.abspath(__file__))
+            icon_path = os.path.join(base_path, "TexasPoker.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except (tk.TclError, Exception):
             pass
 
         screen_width = self.winfo_screenwidth()
