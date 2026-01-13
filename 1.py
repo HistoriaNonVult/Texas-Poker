@@ -1629,12 +1629,29 @@ class PokerApp(tk.Tk):
             # 如果牌已被选中，则取消选择
             self.board_cards.remove(card_str)
             self.board_card_buttons[card_str].config(state='normal', relief='raised', bg='#d0d0d0')
-            self.board_display_var.set(f"已选公共牌: {' '.join(self.board_cards)}" if self.board_cards else "已选公共牌: ")
+            self._update_board_display()
         elif len(self.board_cards) < 5:
             # 如果牌未被选中且公共牌少于5张，则添加
             self.board_cards.append(card_str)
             self.board_card_buttons[card_str].config(state='normal', relief='sunken', bg='#555')
-            self.board_display_var.set(f"已选公共牌: {' '.join(self.board_cards)}")
+            self._update_board_display()
+
+    def _format_card_display(self, card_str):
+        """将牌的字母格式转换为图案格式，如 'As' -> 'A♠'"""
+        suits_map = {'s': '♠', 'h': '♥', 'd': '♦', 'c': '♣'}
+        if len(card_str) == 2:
+            rank = card_str[0]
+            suit = card_str[1].lower()
+            return f"{rank}{suits_map.get(suit, suit)}"
+        return card_str
+
+    def _update_board_display(self):
+        """更新公共牌显示区域"""
+        if self.board_cards:
+            formatted_cards = [self._format_card_display(c) for c in self.board_cards]
+            self.board_display_var.set(f"已选公共牌: {' '.join(formatted_cards)}")
+        else:
+            self.board_display_var.set("已选公共牌: ")
 
     def _reset_board_selector(self):
         self.board_cards = []
