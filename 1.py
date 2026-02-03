@@ -1320,8 +1320,14 @@ class PokerApp(tk.Tk):
     def _specific_to_range_category(self, hand_str):
         try:
             if len(hand_str) != 4: return None
-            r1, s1 = hand_str[0].upper(), hand_str[1].lower()
-            r2, s2 = hand_str[2].upper(), hand_str[3].lower()
+            # 支持图案格式，先转换为字母格式
+            suits_reverse = {'♠': 's', '♥': 'h', '♦': 'd', '♣': 'c'}
+            converted = hand_str
+            for symbol, letter in suits_reverse.items():
+                converted = converted.replace(symbol, letter)
+            
+            r1, s1 = converted[0].upper(), converted[1].lower()
+            r2, s2 = converted[2].upper(), converted[3].lower()
             ranks_order = 'AKQJT98765432'
             if r1 not in ranks_order or r2 not in ranks_order or s1 not in 'shdc' or s2 not in 'shdc':
                 return None
@@ -1392,12 +1398,12 @@ class PokerApp(tk.Tk):
 
         ttk.Label(player_setup_frame, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=8, sticky='w')
         self.p1_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Microsoft YaHei', 9)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
+        ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
         ttk.Button(player_setup_frame, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=8)
 
         ttk.Label(player_setup_frame, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=8, sticky='w')
         self.p2_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Microsoft YaHei', 9)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
+        ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
         ttk.Button(player_setup_frame, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=8)
 
         sim_frame = ttk.Frame(player_setup_frame)
@@ -1458,7 +1464,7 @@ class PokerApp(tk.Tk):
         display_frame = ttk.Frame(board_frame, relief='solid', borderwidth=1)
         display_frame.pack(fill='x', pady=5, padx=10)
         self.board_display_var = tk.StringVar(value="已选公共牌: ")
-        ttk.Label(display_frame, textvariable=self.board_display_var, font=("Microsoft YaHei", 11, "bold")).pack(pady=5, side='left', padx=10)
+        ttk.Label(display_frame, textvariable=self.board_display_var, font=("Segoe UI Symbol", 12, "bold")).pack(pady=5, side='left', padx=10)
         ttk.Button(display_frame, text="重置", command=self._reset_board_selector).pack(side='right', padx=5, pady=5)
         card_pool_frame = ttk.Frame(board_frame)
         card_pool_frame.pack(pady=5, padx=10)
@@ -1671,6 +1677,37 @@ class PokerApp(tk.Tk):
             return f"{rank}{suits_map.get(suit, suit)}"
         return card_str
 
+    def _format_hand_display(self, hand_str):
+        """将手牌范围字符串中的字母花色转换为图案显示格式
+        例如: 'ASAH' -> 'A♠A♥', 'AKs' -> 'AKs', 'AKo' -> 'AKo'
+        """
+        suits_map = {'S': '♠', 'H': '♥', 'D': '♦', 'C': '♣',
+                     's': '♠', 'h': '♥', 'd': '♦', 'c': '♣'}
+        hand_str = hand_str.strip()
+        
+        # 对于4字符的具体手牌(如ASAH, AkHd)
+        if len(hand_str) == 4:
+            r1 = hand_str[0].upper()
+            s1 = hand_str[1]
+            r2 = hand_str[2].upper()
+            s2 = hand_str[3]
+            s1_display = suits_map.get(s1, s1)
+            s2_display = suits_map.get(s2, s2)
+            return f"{r1}{s1_display}{r2}{s2_display}"
+        
+        # 对于范围字符串(如AKs, AKo, AA)保持原样
+        return hand_str
+
+    def _parse_hand_from_display(self, display_str):
+        """将图案格式转换回字母格式用于后端解析
+        例如: 'A♠A♥' -> 'ASAH', 'AKs' -> 'AKs'
+        """
+        suits_reverse = {'♠': 'S', '♥': 'H', '♦': 'D', '♣': 'C'}
+        result = display_str.strip()
+        for symbol, letter in suits_reverse.items():
+            result = result.replace(symbol, letter)
+        return result
+
     def _update_board_display(self):
         """更新公共牌显示区域"""
         if self.board_cards:
@@ -1723,7 +1760,9 @@ class PokerApp(tk.Tk):
                 
                 for hand_item in new_hands_to_process:
                     new_hand = hand_item
-                    if len(hand_item) == 4: new_hand = hand_item.upper() 
+                    # 将4字符手牌转换为图案显示格式
+                    if len(hand_item) == 4:
+                        new_hand = self._format_hand_display(hand_item.upper())
                     
                     if new_hand in current_items_set_inner:
                         current_items_set_inner.remove(new_hand)
@@ -1857,8 +1896,9 @@ class PokerApp(tk.Tk):
 
     def run_analysis_calculation(self):
         try:
-            p1_input = [s.strip().upper() for s in self.p1_hand_var.get().split(',') if s.strip()]
-            p2_input = [s.strip().upper() for s in self.p2_hand_var.get().split(',') if s.strip()]
+            # 将图案格式转换回字母格式用于后端解析
+            p1_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p1_hand_var.get().split(',') if s.strip()]
+            p2_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p2_hand_var.get().split(',') if s.strip()]
             board_input = "".join(self.board_cards)
             num_sims = int(self.num_simulations_var.get())
             
