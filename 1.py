@@ -564,6 +564,416 @@ def _run_simulation_chunk(args: tuple[str, list[list[str]], str, list[list[str]]
 
     return p1_wins, p2_wins, ties, p1_hand_strength_counts, valid_sims
 
+
+def _run_simulation_chunk_3way(args) -> tuple[float, float, float, dict, int]:
+    """
+    三人模式模拟任务块。返回 (p1_wins, p2_wins, p3_wins, p1_strength_counts, valid_sims)。
+    平局时按人头均分胜率（如两人并列第一各 0.5，三人并列各 1/3）。
+    """
+    (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, board, num_sims_chunk,
+     master_deck_cards, calculate_p1_strength) = args
+
+    evaluator = _get_worker_evaluator()
+    if calculate_p1_strength:
+        if not _CACHE_INITIALIZED or _RANK_CLASS_CACHE[1] == 0:
+            _initialize_rank_cache(evaluator)
+
+    _evaluate = evaluator.evaluate
+    _sample = random.sample
+    _choice = random.choice
+    _rank_cache = _RANK_CLASS_CACHE
+
+    def _get_rc_safe(score):
+        rc = _rank_cache[score]
+        if rc == 0:
+            return evaluator.get_rank_class(score)
+        return rc
+
+    board_list = list(board)
+    board_len = len(board_list)
+    cards_needed = 5 - board_len
+    board_set = set(board_list)
+    base_deck_set = set(master_deck_cards) - board_set
+    base_deck_list = list(base_deck_set)
+
+    p1_wins_f, p2_wins_f, p3_wins_f = 0.0, 0.0, 0.0
+    p1_rank_counts_list = [0] * 10
+    valid_sims = 0
+
+    def filter_hands(hands, bset):
+        if not hands:
+            return []
+        return [h for h in hands if set(h).isdisjoint(bset)]
+
+    real_p1 = filter_hands(p1_hands, board_set) if p1_type != 'random' else None
+    real_p2 = filter_hands(p2_hands, board_set) if p2_type != 'random' else None
+    real_p3 = filter_hands(p3_hands, board_set) if p3_type != 'random' else None
+
+    if (p1_type != 'random' and not real_p1) or (p2_type != 'random' and not real_p2) or (p3_type != 'random' and not real_p3):
+        return 0.0, 0.0, 0.0, {}, 0
+
+    def pick_three_hands():
+        used = set()
+        # P1
+        if p1_type == 'random':
+            if len(base_deck_list) < 6:
+                return None
+            draw = _sample(base_deck_list, 6)
+            h1 = draw[0:2]
+            used.update(h1)
+        elif len(real_p1) == 1:
+            h1 = list(real_p1[0])
+            if not set(h1).isdisjoint(used):
+                return None
+            used.update(h1)
+        else:
+            for _ in range(30):
+                h1 = list(_choice(real_p1))
+                if set(h1).isdisjoint(used):
+                    used.update(h1)
+                    break
+            else:
+                return None
+        # P2
+        deck2 = [c for c in base_deck_list if c not in used]
+        if p2_type == 'random':
+            if len(deck2) < 2:
+                return None
+            h2 = _sample(deck2, 2)
+            used.update(h2)
+        elif len(real_p2) == 1:
+            h2 = list(real_p2[0])
+            if not set(h2).isdisjoint(used):
+                return None
+            used.update(h2)
+        else:
+            valid_p2 = [h for h in real_p2 if set(h).isdisjoint(used)]
+            if not valid_p2:
+                return None
+            h2 = list(_choice(valid_p2))
+            used.update(h2)
+        # P3
+        deck3 = [c for c in base_deck_list if c not in used]
+        if p3_type == 'random':
+            if len(deck3) < 2:
+                return None
+            h3 = _sample(deck3, 2)
+        elif len(real_p3) == 1:
+            h3 = list(real_p3[0])
+            if not set(h3).isdisjoint(used):
+                return None
+        else:
+            valid_p3 = [h for h in real_p3 if set(h).isdisjoint(used)]
+            if not valid_p3:
+                return None
+            h3 = list(_choice(valid_p3))
+        return (h1, h2, h3)
+
+    for _ in range(num_sims_chunk):
+        hands = pick_three_hands()
+        if hands is None:
+            continue
+        h1, h2, h3 = hands
+        if cards_needed > 0:
+            used = set(h1) | set(h2) | set(h3) | set(board_list)
+            deck_rem = [c for c in base_deck_list if c not in used]
+            if len(deck_rem) < cards_needed:
+                continue
+            board_ext = _sample(deck_rem, cards_needed)
+            run_board = board_list + board_ext
+        else:
+            run_board = board_list
+
+        s1 = _evaluate(run_board, h1)
+        s2 = _evaluate(run_board, h2)
+        s3 = _evaluate(run_board, h3)
+        best = min(s1, s2, s3)
+        winners = [i for i, s in enumerate([s1, s2, s3]) if s == best]
+        frac = 1.0 / len(winners)
+        p1_wins_f += frac if 0 in winners else 0.0
+        p2_wins_f += frac if 1 in winners else 0.0
+        p3_wins_f += frac if 2 in winners else 0.0
+        if calculate_p1_strength:
+            p1_rank_counts_list[_get_rc_safe(s1)] += 1
+        valid_sims += 1
+
+    strength_dict = {}
+    if calculate_p1_strength:
+        for rank_val in range(1, 10):
+            c = p1_rank_counts_list[rank_val]
+            if c:
+                strength_dict[RANK_CLASS_TO_STRING.get(rank_val)] = c
+    return p1_wins_f, p2_wins_f, p3_wins_f, strength_dict, valid_sims
+
+
+def _run_simulation_chunk_4way(args) -> tuple[float, float, float, float, dict, int]:
+    """
+    四人模式模拟任务块。返回 (p1_wins, p2_wins, p3_wins, p4_wins, p1_strength_counts, valid_sims)。
+    平局时按人头均分胜率。
+    """
+    (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, p4_type, p4_hands, board, num_sims_chunk,
+     master_deck_cards, calculate_p1_strength) = args
+
+    evaluator = _get_worker_evaluator()
+    if calculate_p1_strength:
+        if not _CACHE_INITIALIZED or _RANK_CLASS_CACHE[1] == 0:
+            _initialize_rank_cache(evaluator)
+
+    _evaluate = evaluator.evaluate
+    _sample = random.sample
+    _choice = random.choice
+    _rank_cache = _RANK_CLASS_CACHE
+
+    def _get_rc_safe(score):
+        rc = _rank_cache[score]
+        if rc == 0:
+            return evaluator.get_rank_class(score)
+        return rc
+
+    board_list = list(board)
+    cards_needed = 5 - len(board_list)
+    board_set = set(board_list)
+    base_deck_set = set(master_deck_cards) - board_set
+    base_deck_list = list(base_deck_set)
+
+    p1_wins_f, p2_wins_f, p3_wins_f, p4_wins_f = 0.0, 0.0, 0.0, 0.0
+    p1_rank_counts_list = [0] * 10
+    valid_sims = 0
+
+    def filter_hands(hands, bset):
+        if not hands:
+            return []
+        return [h for h in hands if set(h).isdisjoint(bset)]
+
+    real_p1 = filter_hands(p1_hands, board_set) if p1_type != 'random' else None
+    real_p2 = filter_hands(p2_hands, board_set) if p2_type != 'random' else None
+    real_p3 = filter_hands(p3_hands, board_set) if p3_type != 'random' else None
+    real_p4 = filter_hands(p4_hands, board_set) if p4_type != 'random' else None
+
+    if (p1_type != 'random' and not real_p1) or (p2_type != 'random' and not real_p2) or (p3_type != 'random' and not real_p3) or (p4_type != 'random' and not real_p4):
+        return 0.0, 0.0, 0.0, 0.0, {}, 0
+
+    def pick_four_hands():
+        used = set()
+        if p1_type == 'random':
+            if len(base_deck_list) < 8:
+                return None
+            draw = _sample(base_deck_list, 8)
+            h1 = draw[0:2]
+            used.update(h1)
+        elif len(real_p1) == 1:
+            h1 = list(real_p1[0])
+            if not set(h1).isdisjoint(used):
+                return None
+            used.update(h1)
+        else:
+            for _ in range(30):
+                h1 = list(_choice(real_p1))
+                if set(h1).isdisjoint(used):
+                    used.update(h1)
+                    break
+            else:
+                return None
+        deck2 = [c for c in base_deck_list if c not in used]
+        if p2_type == 'random':
+            if len(deck2) < 2:
+                return None
+            h2 = _sample(deck2, 2)
+            used.update(h2)
+        elif len(real_p2) == 1:
+            h2 = list(real_p2[0])
+            if not set(h2).isdisjoint(used):
+                return None
+            used.update(h2)
+        else:
+            valid_p2 = [h for h in real_p2 if set(h).isdisjoint(used)]
+            if not valid_p2:
+                return None
+            h2 = list(_choice(valid_p2))
+            used.update(h2)
+        deck3 = [c for c in base_deck_list if c not in used]
+        if p3_type == 'random':
+            if len(deck3) < 2:
+                return None
+            h3 = _sample(deck3, 2)
+            used.update(h3)
+        elif len(real_p3) == 1:
+            h3 = list(real_p3[0])
+            if not set(h3).isdisjoint(used):
+                return None
+            used.update(h3)
+        else:
+            valid_p3 = [h for h in real_p3 if set(h).isdisjoint(used)]
+            if not valid_p3:
+                return None
+            h3 = list(_choice(valid_p3))
+            used.update(h3)
+        deck4 = [c for c in base_deck_list if c not in used]
+        if p4_type == 'random':
+            if len(deck4) < 2:
+                return None
+            h4 = _sample(deck4, 2)
+        elif len(real_p4) == 1:
+            h4 = list(real_p4[0])
+            if not set(h4).isdisjoint(used):
+                return None
+        else:
+            valid_p4 = [h for h in real_p4 if set(h).isdisjoint(used)]
+            if not valid_p4:
+                return None
+            h4 = list(_choice(valid_p4))
+        return (h1, h2, h3, h4)
+
+    for _ in range(num_sims_chunk):
+        hands = pick_four_hands()
+        if hands is None:
+            continue
+        h1, h2, h3, h4 = hands
+        if cards_needed > 0:
+            used = set(h1) | set(h2) | set(h3) | set(h4) | set(board_list)
+            deck_rem = [c for c in base_deck_list if c not in used]
+            if len(deck_rem) < cards_needed:
+                continue
+            board_ext = _sample(deck_rem, cards_needed)
+            run_board = board_list + board_ext
+        else:
+            run_board = board_list
+
+        s1 = _evaluate(run_board, h1)
+        s2 = _evaluate(run_board, h2)
+        s3 = _evaluate(run_board, h3)
+        s4 = _evaluate(run_board, h4)
+        best = min(s1, s2, s3, s4)
+        winners = [i for i, s in enumerate([s1, s2, s3, s4]) if s == best]
+        frac = 1.0 / len(winners)
+        p1_wins_f += frac if 0 in winners else 0.0
+        p2_wins_f += frac if 1 in winners else 0.0
+        p3_wins_f += frac if 2 in winners else 0.0
+        p4_wins_f += frac if 3 in winners else 0.0
+        if calculate_p1_strength:
+            p1_rank_counts_list[_get_rc_safe(s1)] += 1
+        valid_sims += 1
+
+    strength_dict = {}
+    if calculate_p1_strength:
+        for rank_val in range(1, 10):
+            c = p1_rank_counts_list[rank_val]
+            if c:
+                strength_dict[RANK_CLASS_TO_STRING.get(rank_val)] = c
+    return p1_wins_f, p2_wins_f, p3_wins_f, p4_wins_f, strength_dict, valid_sims
+
+
+def _run_simulation_chunk_5way(args) -> tuple[float, float, float, float, float, dict, int]:
+    """
+    五人模式模拟任务块。返回 (p1_wins, p2_wins, p3_wins, p4_wins, p5_wins, p1_strength_counts, valid_sims)。
+    平局时按人头均分胜率。
+    """
+    (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, p4_type, p4_hands, p5_type, p5_hands,
+     board, num_sims_chunk, master_deck_cards, calculate_p1_strength) = args
+
+    evaluator = _get_worker_evaluator()
+    if calculate_p1_strength:
+        if not _CACHE_INITIALIZED or _RANK_CLASS_CACHE[1] == 0:
+            _initialize_rank_cache(evaluator)
+
+    _evaluate = evaluator.evaluate
+    _sample = random.sample
+    _choice = random.choice
+    _rank_cache = _RANK_CLASS_CACHE
+
+    def _get_rc_safe(score):
+        rc = _rank_cache[score]
+        if rc == 0:
+            return evaluator.get_rank_class(score)
+        return rc
+
+    board_list = list(board)
+    cards_needed = 5 - len(board_list)
+    board_set = set(board_list)
+    base_deck_set = set(master_deck_cards) - board_set
+    base_deck_list = list(base_deck_set)
+
+    p1_wins_f, p2_wins_f, p3_wins_f, p4_wins_f, p5_wins_f = 0.0, 0.0, 0.0, 0.0, 0.0
+    p1_rank_counts_list = [0] * 10
+    valid_sims = 0
+
+    def filter_hands(hands, bset):
+        if not hands:
+            return []
+        return [h for h in hands if set(h).isdisjoint(bset)]
+
+    real_p1 = filter_hands(p1_hands, board_set) if p1_type != 'random' else None
+    real_p2 = filter_hands(p2_hands, board_set) if p2_type != 'random' else None
+    real_p3 = filter_hands(p3_hands, board_set) if p3_type != 'random' else None
+    real_p4 = filter_hands(p4_hands, board_set) if p4_type != 'random' else None
+    real_p5 = filter_hands(p5_hands, board_set) if p5_type != 'random' else None
+
+    if (p1_type != 'random' and not real_p1) or (p2_type != 'random' and not real_p2) or (p3_type != 'random' and not real_p3) or (p4_type != 'random' and not real_p4) or (p5_type != 'random' and not real_p5):
+        return 0.0, 0.0, 0.0, 0.0, 0.0, {}, 0
+
+    def pick_five_hands():
+        used = set()
+        hands = []
+        for p_type, real_list in [(p1_type, real_p1), (p2_type, real_p2), (p3_type, real_p3), (p4_type, real_p4), (p5_type, real_p5)]:
+            deck_cur = [c for c in base_deck_list if c not in used]
+            if p_type == 'random':
+                if len(deck_cur) < 2:
+                    return None
+                h = _sample(deck_cur, 2)
+            elif len(real_list) == 1:
+                h = list(real_list[0])
+                if not set(h).isdisjoint(used):
+                    return None
+            else:
+                valid = [h for h in real_list if set(h).isdisjoint(used)]
+                if not valid:
+                    return None
+                h = list(_choice(valid))
+            hands.append(h)
+            used.update(h)
+        return tuple(hands)
+
+    for _ in range(num_sims_chunk):
+        hands = pick_five_hands()
+        if hands is None:
+            continue
+        h1, h2, h3, h4, h5 = hands
+        if cards_needed > 0:
+            used = set(h1) | set(h2) | set(h3) | set(h4) | set(h5) | set(board_list)
+            deck_rem = [c for c in base_deck_list if c not in used]
+            if len(deck_rem) < cards_needed:
+                continue
+            board_ext = _sample(deck_rem, cards_needed)
+            run_board = board_list + board_ext
+        else:
+            run_board = board_list
+
+        s1 = _evaluate(run_board, h1)
+        s2 = _evaluate(run_board, h2)
+        s3 = _evaluate(run_board, h3)
+        s4 = _evaluate(run_board, h4)
+        s5 = _evaluate(run_board, h5)
+        best = min(s1, s2, s3, s4, s5)
+        winners = [i for i, s in enumerate([s1, s2, s3, s4, s5]) if s == best]
+        frac = 1.0 / len(winners)
+        p1_wins_f += frac if 0 in winners else 0.0
+        p2_wins_f += frac if 1 in winners else 0.0
+        p3_wins_f += frac if 2 in winners else 0.0
+        p4_wins_f += frac if 3 in winners else 0.0
+        p5_wins_f += frac if 4 in winners else 0.0
+        if calculate_p1_strength:
+            p1_rank_counts_list[_get_rc_safe(s1)] += 1
+        valid_sims += 1
+
+    strength_dict = {}
+    if calculate_p1_strength:
+        for rank_val in range(1, 10):
+            c = p1_rank_counts_list[rank_val]
+            if c:
+                strength_dict[RANK_CLASS_TO_STRING.get(rank_val)] = c
+    return p1_wins_f, p2_wins_f, p3_wins_f, p4_wins_f, p5_wins_f, strength_dict, valid_sims
+
+
 # --- 核心扑克逻辑模块 ---
 class PokerLogic:
     def __init__(self):
@@ -804,6 +1214,327 @@ class PokerLogic:
                     prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
                     strength_results[hand_type] = prob
         
+        return equity_results, strength_results, calculate_p1_strength
+
+    def run_analysis_3way(self, p1_input_raw, p2_input_raw, p3_input_raw, board_str, num_simulations=50000, progress_callback=None):
+        """三人模式胜率分析。返回 (equity_results, strength_results, show_strength)。"""
+        def check_hand_list(hand_list, seen_cards_set, player_name):
+            for hand in hand_list:
+                hand_set = set(hand)
+                if not hand_set.isdisjoint(seen_cards_set):
+                    conflicting_card = (hand_set & seen_cards_set).pop()
+                    card_str = Card.int_to_str(conflicting_card)
+                    hand_str = [Card.int_to_str(c) for c in hand]
+                    raise ValueError(f"{player_name} 内部冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+            for hand in hand_list:
+                seen_cards_set.update(hand)
+
+        def filter_range(hand_list, seen_cards_set, player_name):
+            valid_hands = [h for h in hand_list if set(h).isdisjoint(seen_cards_set)]
+            if not valid_hands and hand_list:
+                raise ValueError(f"{player_name} 的范围与已选卡牌完全冲突。")
+            return valid_hands
+
+        try:
+            board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
+            if len(set(board)) != len(board):
+                raise ValueError("公共牌中包含重复的牌。")
+
+            p1_type, p1_hands = self._determine_input_type(p1_input_raw)
+            p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            p3_type, p3_hands = self._determine_input_type(p3_input_raw)
+            calculate_p1_strength = True
+
+            seen_cards = set(board)
+            if p1_type == 'hand':
+                check_hand_list(p1_hands, seen_cards, "玩家1")
+            if p2_type == 'hand':
+                check_hand_list(p2_hands, seen_cards, "玩家2")
+            if p3_type == 'hand':
+                check_hand_list(p3_hands, seen_cards, "玩家3")
+            if p1_type == 'range':
+                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+            if p2_type == 'range':
+                p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+            if p3_type == 'range':
+                p3_hands = filter_range(p3_hands, seen_cards, "玩家3")
+        except ValueError as e:
+            raise ValueError(f"输入解析错误: {e}")
+
+        try:
+            num_cores = max(1, multiprocessing.cpu_count() - 1)
+        except NotImplementedError:
+            num_cores = 1
+        TARGET_SMOOTHNESS_TASKS = 150
+        if num_simulations <= 0:
+            num_tasks, chunk_size, remainder = 0, 0, 0
+        else:
+            num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
+            chunk_size = num_simulations // num_tasks
+            remainder = num_simulations % num_tasks
+
+        master_deck_cards = list(self.master_deck.cards)
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, board, master_deck_cards, calculate_p1_strength)
+        tasks = []
+        for _ in range(num_tasks):
+            if chunk_size > 0:
+                tasks.append(base_args[:7] + (chunk_size,) + base_args[7:])
+        if remainder > 0:
+            tasks.append(base_args[:7] + (remainder,) + base_args[7:])
+
+        total_p1_wins = total_p2_wins = total_p3_wins = 0.0
+        total_p1_strength_counts = defaultdict(int)
+        total_valid_sims = 0
+        pool = _get_or_create_pool(num_cores)
+        completed_sims = 0
+        for result_chunk in pool.imap_unordered(_run_simulation_chunk_3way, tasks):
+            p1w, p2w, p3w, p1_strength, valid_sims = result_chunk
+            total_p1_wins += p1w
+            total_p2_wins += p2w
+            total_p3_wins += p3w
+            for hand_type, count in p1_strength.items():
+                total_p1_strength_counts[hand_type] += count
+            total_valid_sims += valid_sims
+            if progress_callback:
+                completed_sims += valid_sims
+                progress_callback(completed_sims)
+        if progress_callback:
+            progress_callback(num_simulations)
+        if total_valid_sims == 0 and num_simulations > 0:
+            raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
+
+        equity_results = {'p1_win': 0, 'p2_win': 0, 'p3_win': 0}
+        if total_valid_sims > 0:
+            equity_results = {
+                'p1_win': (total_p1_wins / total_valid_sims) * 100,
+                'p2_win': (total_p2_wins / total_valid_sims) * 100,
+                'p3_win': (total_p3_wins / total_valid_sims) * 100
+            }
+        strength_results = {}
+        if calculate_p1_strength:
+            total_strength_hands = sum(total_p1_strength_counts.values())
+            if total_strength_hands > 0:
+                for rank in range(1, 10):
+                    hand_type = self.rank_class_to_string_map[rank]
+                    prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
+                    strength_results[hand_type] = prob
+        return equity_results, strength_results, calculate_p1_strength
+
+    def run_analysis_4way(self, p1_input_raw, p2_input_raw, p3_input_raw, p4_input_raw, board_str, num_simulations=50000, progress_callback=None):
+        """四人模式胜率分析。返回 (equity_results, strength_results, show_strength)。"""
+        def check_hand_list(hand_list, seen_cards_set, player_name):
+            for hand in hand_list:
+                hand_set = set(hand)
+                if not hand_set.isdisjoint(seen_cards_set):
+                    conflicting_card = (hand_set & seen_cards_set).pop()
+                    card_str = Card.int_to_str(conflicting_card)
+                    hand_str = [Card.int_to_str(c) for c in hand]
+                    raise ValueError(f"{player_name} 内部冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+            for hand in hand_list:
+                seen_cards_set.update(hand)
+
+        def filter_range(hand_list, seen_cards_set, player_name):
+            valid_hands = [h for h in hand_list if set(h).isdisjoint(seen_cards_set)]
+            if not valid_hands and hand_list:
+                raise ValueError(f"{player_name} 的范围与已选卡牌完全冲突。")
+            return valid_hands
+
+        try:
+            board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
+            if len(set(board)) != len(board):
+                raise ValueError("公共牌中包含重复的牌。")
+
+            p1_type, p1_hands = self._determine_input_type(p1_input_raw)
+            p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            p3_type, p3_hands = self._determine_input_type(p3_input_raw)
+            p4_type, p4_hands = self._determine_input_type(p4_input_raw)
+            calculate_p1_strength = True
+
+            seen_cards = set(board)
+            if p1_type == 'hand':
+                check_hand_list(p1_hands, seen_cards, "玩家1")
+            if p2_type == 'hand':
+                check_hand_list(p2_hands, seen_cards, "玩家2")
+            if p3_type == 'hand':
+                check_hand_list(p3_hands, seen_cards, "玩家3")
+            if p4_type == 'hand':
+                check_hand_list(p4_hands, seen_cards, "玩家4")
+            if p1_type == 'range':
+                p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+            if p2_type == 'range':
+                p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+            if p3_type == 'range':
+                p3_hands = filter_range(p3_hands, seen_cards, "玩家3")
+            if p4_type == 'range':
+                p4_hands = filter_range(p4_hands, seen_cards, "玩家4")
+        except ValueError as e:
+            raise ValueError(f"输入解析错误: {e}")
+
+        try:
+            num_cores = max(1, multiprocessing.cpu_count() - 1)
+        except NotImplementedError:
+            num_cores = 1
+        TARGET_SMOOTHNESS_TASKS = 150
+        if num_simulations <= 0:
+            num_tasks, chunk_size, remainder = 0, 0, 0
+        else:
+            num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
+            chunk_size = num_simulations // num_tasks
+            remainder = num_simulations % num_tasks
+
+        master_deck_cards = list(self.master_deck.cards)
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, p4_type, p4_hands, board, master_deck_cards, calculate_p1_strength)
+        tasks = []
+        for _ in range(num_tasks):
+            if chunk_size > 0:
+                tasks.append(base_args[:9] + (chunk_size,) + base_args[9:])
+        if remainder > 0:
+            tasks.append(base_args[:9] + (remainder,) + base_args[9:])
+
+        total_p1_wins = total_p2_wins = total_p3_wins = total_p4_wins = 0.0
+        total_p1_strength_counts = defaultdict(int)
+        total_valid_sims = 0
+        pool = _get_or_create_pool(num_cores)
+        completed_sims = 0
+        for result_chunk in pool.imap_unordered(_run_simulation_chunk_4way, tasks):
+            p1w, p2w, p3w, p4w, p1_strength, valid_sims = result_chunk
+            total_p1_wins += p1w
+            total_p2_wins += p2w
+            total_p3_wins += p3w
+            total_p4_wins += p4w
+            for hand_type, count in p1_strength.items():
+                total_p1_strength_counts[hand_type] += count
+            total_valid_sims += valid_sims
+            if progress_callback:
+                completed_sims += valid_sims
+                progress_callback(completed_sims)
+        if progress_callback:
+            progress_callback(num_simulations)
+        if total_valid_sims == 0 and num_simulations > 0:
+            raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
+
+        equity_results = {'p1_win': 0, 'p2_win': 0, 'p3_win': 0, 'p4_win': 0}
+        if total_valid_sims > 0:
+            equity_results = {
+                'p1_win': (total_p1_wins / total_valid_sims) * 100,
+                'p2_win': (total_p2_wins / total_valid_sims) * 100,
+                'p3_win': (total_p3_wins / total_valid_sims) * 100,
+                'p4_win': (total_p4_wins / total_valid_sims) * 100
+            }
+        strength_results = {}
+        if calculate_p1_strength:
+            total_strength_hands = sum(total_p1_strength_counts.values())
+            if total_strength_hands > 0:
+                for rank in range(1, 10):
+                    hand_type = self.rank_class_to_string_map[rank]
+                    prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
+                    strength_results[hand_type] = prob
+        return equity_results, strength_results, calculate_p1_strength
+
+    def run_analysis_5way(self, p1_input_raw, p2_input_raw, p3_input_raw, p4_input_raw, p5_input_raw, board_str, num_simulations=50000, progress_callback=None):
+        """五人模式胜率分析。返回 (equity_results, strength_results, show_strength)。"""
+        def check_hand_list(hand_list, seen_cards_set, player_name):
+            for hand in hand_list:
+                hand_set = set(hand)
+                if not hand_set.isdisjoint(seen_cards_set):
+                    conflicting_card = (hand_set & seen_cards_set).pop()
+                    card_str = Card.int_to_str(conflicting_card)
+                    hand_str = [Card.int_to_str(c) for c in hand]
+                    raise ValueError(f"{player_name} 内部冲突: 牌 {card_str} (在手牌 {hand_str} 中) 已被使用。")
+            for hand in hand_list:
+                seen_cards_set.update(hand)
+
+        def filter_range(hand_list, seen_cards_set, player_name):
+            valid_hands = [h for h in hand_list if set(h).isdisjoint(seen_cards_set)]
+            if not valid_hands and hand_list:
+                raise ValueError(f"{player_name} 的范围与已选卡牌完全冲突。")
+            return valid_hands
+
+        try:
+            board = [Card.new(c) for c in self._split_hand_str(board_str)] if board_str else []
+            if len(set(board)) != len(board):
+                raise ValueError("公共牌中包含重复的牌。")
+
+            p1_type, p1_hands = self._determine_input_type(p1_input_raw)
+            p2_type, p2_hands = self._determine_input_type(p2_input_raw)
+            p3_type, p3_hands = self._determine_input_type(p3_input_raw)
+            p4_type, p4_hands = self._determine_input_type(p4_input_raw)
+            p5_type, p5_hands = self._determine_input_type(p5_input_raw)
+            calculate_p1_strength = True
+
+            seen_cards = set(board)
+            for i, (pt, ph, name) in enumerate([(p1_type, p1_hands, "玩家1"), (p2_type, p2_hands, "玩家2"), (p3_type, p3_hands, "玩家3"), (p4_type, p4_hands, "玩家4"), (p5_type, p5_hands, "玩家5")]):
+                if pt == 'hand':
+                    check_hand_list(ph, seen_cards, name)
+            if p1_type == 'range': p1_hands = filter_range(p1_hands, seen_cards, "玩家1")
+            if p2_type == 'range': p2_hands = filter_range(p2_hands, seen_cards, "玩家2")
+            if p3_type == 'range': p3_hands = filter_range(p3_hands, seen_cards, "玩家3")
+            if p4_type == 'range': p4_hands = filter_range(p4_hands, seen_cards, "玩家4")
+            if p5_type == 'range': p5_hands = filter_range(p5_hands, seen_cards, "玩家5")
+        except ValueError as e:
+            raise ValueError(f"输入解析错误: {e}")
+
+        try:
+            num_cores = max(1, multiprocessing.cpu_count() - 1)
+        except NotImplementedError:
+            num_cores = 1
+        TARGET_SMOOTHNESS_TASKS = 150
+        if num_simulations <= 0:
+            num_tasks, chunk_size, remainder = 0, 0, 0
+        else:
+            num_tasks = min(TARGET_SMOOTHNESS_TASKS, num_simulations)
+            chunk_size = num_simulations // num_tasks
+            remainder = num_simulations % num_tasks
+
+        master_deck_cards = list(self.master_deck.cards)
+        base_args = (p1_type, p1_hands, p2_type, p2_hands, p3_type, p3_hands, p4_type, p4_hands, p5_type, p5_hands, board, master_deck_cards, calculate_p1_strength)
+        tasks = []
+        for _ in range(num_tasks):
+            if chunk_size > 0:
+                tasks.append(base_args[:11] + (chunk_size,) + base_args[11:])
+        if remainder > 0:
+            tasks.append(base_args[:11] + (remainder,) + base_args[11:])
+
+        total_p1_wins = total_p2_wins = total_p3_wins = total_p4_wins = total_p5_wins = 0.0
+        total_p1_strength_counts = defaultdict(int)
+        total_valid_sims = 0
+        pool = _get_or_create_pool(num_cores)
+        completed_sims = 0
+        for result_chunk in pool.imap_unordered(_run_simulation_chunk_5way, tasks):
+            p1w, p2w, p3w, p4w, p5w, p1_strength, valid_sims = result_chunk
+            total_p1_wins += p1w
+            total_p2_wins += p2w
+            total_p3_wins += p3w
+            total_p4_wins += p4w
+            total_p5_wins += p5w
+            for hand_type, count in p1_strength.items():
+                total_p1_strength_counts[hand_type] += count
+            total_valid_sims += valid_sims
+            if progress_callback:
+                completed_sims += valid_sims
+                progress_callback(completed_sims)
+        if progress_callback:
+            progress_callback(num_simulations)
+        if total_valid_sims == 0 and num_simulations > 0:
+            raise ValueError("无法完成任何有效模拟。请检查输入设置（例如手牌和公共牌冲突）。")
+
+        equity_results = {'p1_win': 0, 'p2_win': 0, 'p3_win': 0, 'p4_win': 0, 'p5_win': 0}
+        if total_valid_sims > 0:
+            equity_results = {
+                'p1_win': (total_p1_wins / total_valid_sims) * 100,
+                'p2_win': (total_p2_wins / total_valid_sims) * 100,
+                'p3_win': (total_p3_wins / total_valid_sims) * 100,
+                'p4_win': (total_p4_wins / total_valid_sims) * 100,
+                'p5_win': (total_p5_wins / total_valid_sims) * 100
+            }
+        strength_results = {}
+        if calculate_p1_strength:
+            total_strength_hands = sum(total_p1_strength_counts.values())
+            if total_strength_hands > 0:
+                for rank in range(1, 10):
+                    hand_type = self.rank_class_to_string_map[rank]
+                    prob = (total_p1_strength_counts.get(hand_type, 0) / total_strength_hands) * 100
+                    strength_results[hand_type] = prob
         return equity_results, strength_results, calculate_p1_strength
 
 
@@ -1190,17 +1921,276 @@ class GradientProgressBar(tk.Canvas):
         self.max_val = max_val
         self._update_mask_position()
 
+
+# --- 启动页：选择 2～6 人模式 ---
+class StartupWindow(tk.Tk):
+    """精美的启动页，用于选择 2/3/4/5 人对战模式。"""
+    def __init__(self):
+        super().__init__()
+        self.selected_players = None  # 2～5 或 None（未选/关闭）
+        self._icon_path = None
+        self._glow_items = []  # 存储需要动画的元素
+        self._glow_phase = 0   # 动画相位
+        
+        try:
+            base_path = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+            icon_path = os.path.join(base_path, "TexasPoker.ico")
+            if os.path.exists(icon_path):
+                self._icon_path = icon_path
+                self.iconbitmap(default=icon_path)
+        except (tk.TclError, Exception):
+            pass
+
+        self.title("Texas Hold'em Equity Calculator")
+        self.resizable(False, False)
+        w, h = 760, 580
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{int((screen_w - w) / 2)}+{int((screen_h - h) / 2) - 50}")
+        self.configure(bg='#0a0c10')
+        self.option_add('*Font', ('Microsoft YaHei', 10))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 主画布
+        self.main_canvas = tk.Canvas(self, width=w, height=h, bg='#0a0c10', highlightthickness=0)
+        self.main_canvas.pack(fill='both', expand=True)
+        c = self.main_canvas  # 简写
+
+        # ========== 背景装饰 ==========
+        # 深色渐变背景（模拟）
+        for i in range(h):
+            # 从顶部深蓝到底部更深的黑
+            ratio = i / h
+            r = int(10 + ratio * 2)
+            g = int(12 + ratio * 4)
+            b = int(16 + ratio * 6)
+            c.create_line(0, i, w, i, fill=f'#{r:02x}{g:02x}{b:02x}')
+        
+        # 装饰性网格线（营造科技感）
+        for x in range(0, w, 60):
+            c.create_line(x, 0, x, h, fill='#151922', width=1)
+        for y in range(0, h, 60):
+            c.create_line(0, y, w, y, fill='#151922', width=1)
+
+        # ========== 顶部发光条 ==========
+        # 主发光条（带渐变效果）
+        glow_colors = ['#0d3d30', '#0f5040', '#11a080', '#00ffaa', '#11a080', '#0f5040', '#0d3d30']
+        bar_height = 4
+        segment_w = w // len(glow_colors)
+        for i, color in enumerate(glow_colors):
+            c.create_rectangle(i * segment_w, 0, (i + 1) * segment_w + 1, bar_height, fill=color, outline='')
+        
+        # 顶部区域背景
+        c.create_rectangle(0, bar_height, w, 70, fill='#0d1117', outline='')
+        c.create_line(0, 70, w, 70, fill='#1a2332', width=1)
+
+        # ========== 装饰性扑克牌符号 ==========
+        suits = ['♠', '♥', '♦', '♣']
+        suit_colors = ['#2a3444', '#3a2030', '#3a3020', '#2a3444']
+        positions = [(80, 150), (w-80, 150), (100, h-100), (w-100, h-100)]
+        for (px, py), suit, color in zip(positions, suits, suit_colors):
+            c.create_text(px, py, text=suit, fill=color, font=('Arial', 48, 'bold'))
+        
+        # ========== Logo 区域 ==========
+        # Logo 背景光晕
+        for r in range(80, 0, -5):
+            alpha_hex = hex(int(15 - r * 0.15))[2:].zfill(2)
+            c.create_oval(w/2 - r, 115 - r/2, w/2 + r, 115 + r/2, 
+                         fill='', outline=f'#00{alpha_hex}55', width=2)
+        
+        # 主标题 "TEXAS HOLD'EM"
+        c.create_text(w/2, 100, text="TEXAS HOLD'EM", 
+                     fill='#00ffaa', font=('Arial Black', 32, 'bold'))
+        # 标题阴影/辉光效果
+        c.create_text(w/2 + 2, 102, text="TEXAS HOLD'EM", 
+                     fill='#004433', font=('Arial Black', 32, 'bold'))
+        # 重绘前景标题
+        title_id = c.create_text(w/2, 100, text="TEXAS HOLD'EM", 
+                                fill='#00ffaa', font=('Arial Black', 32, 'bold'))
+        self._glow_items.append(('title', title_id))
+        
+        # 副标题
+        c.create_text(w/2, 145, text="EQUITY CALCULATOR", 
+                     fill='#5a6a7a', font=('Arial', 14, 'bold'))
+        
+        # 中文标题
+        c.create_text(w/2, 178, text="— 德州扑克胜率分析器 —", 
+                     fill='#3a4a5a', font=('Microsoft YaHei', 11))
+
+        # ========== 分隔线装饰 ==========
+        line_y = 210
+        # 中间亮线
+        c.create_line(150, line_y, w-150, line_y, fill='#00aa77', width=1)
+        # 两端菱形装饰
+        diamond_size = 6
+        for dx in [150, w-150]:
+            c.create_polygon(dx, line_y - diamond_size, dx + diamond_size, line_y,
+                            dx, line_y + diamond_size, dx - diamond_size, line_y,
+                            fill='#00aa77', outline='')
+        
+        # "选择对战模式" 文字
+        c.create_text(w/2, 245, text="SELECT PLAYERS", 
+                     fill='#6a7a8a', font=('Arial', 11, 'bold'))
+        c.create_text(w/2, 265, text="选择分析人数", 
+                     fill='#4a5a6a', font=('Microsoft YaHei', 10))
+
+        # ========== 模式选择按钮 ==========
+        btn_configs = [
+            {'n': 2, 'color': '#00d4aa', 'hover': '#00ffcc', 'glow': '#004433', 'label': '双人对决', 'icon': '👥'},
+            {'n': 3, 'color': '#ff7043', 'hover': '#ff8a65', 'glow': '#4d2213', 'label': '三人混战', 'icon': '👥'},
+            {'n': 4, 'color': '#7c4dff', 'hover': '#9e7bff', 'glow': '#2a1a4d', 'label': '四人对局', 'icon': '👥'},
+            {'n': 5, 'color': '#ff4081', 'hover': '#ff79a8', 'glow': '#4d1228', 'label': '五人激战', 'icon': '👥'},
+        ]
+        
+        self._mode_buttons = []
+        btn_width, btn_height = 140, 110
+        total_width = len(btn_configs) * btn_width + (len(btn_configs) - 1) * 20
+        start_x = (w - total_width) / 2
+        btn_y = 320
+        
+        for i, cfg in enumerate(btn_configs):
+            x = start_x + i * (btn_width + 20)
+            btn_data = self._create_mode_button(c, x, btn_y, btn_width, btn_height, cfg)
+            self._mode_buttons.append(btn_data)
+
+        # ========== 底部信息栏 ==========
+        footer_y = h - 70
+        c.create_rectangle(0, footer_y, w, h, fill='#0d1117', outline='')
+        c.create_line(0, footer_y, w, footer_y, fill='#1a2332', width=1)
+        
+        # 底部装饰点
+        for dx in range(30, w, 60):
+            c.create_oval(dx-2, footer_y + 6, dx+2, footer_y + 10, fill='#1a2a3a', outline='')
+        
+        # 功能说明
+        features = ["手牌分析", "范围计算", "公共牌模拟", "多人对战"]
+        feature_x = w / (len(features) + 1)
+        for i, feat in enumerate(features):
+            fx = feature_x * (i + 1)
+            c.create_text(fx, h - 42, text="●", fill='#00aa77', font=('Arial', 8))
+            c.create_text(fx, h - 24, text=feat, fill='#5a6a7a', font=('Microsoft YaHei', 9))
+        
+        # 版本号
+        c.create_text(w - 40, h - 15, text="v2.0", fill='#3a4a5a', font=('Arial', 9))
+
+        # 启动发光动画
+        self._animate_glow()
+
+    def _create_mode_button(self, canvas, x, y, w, h, cfg):
+        """创建带悬停效果的模式选择按钮"""
+        c = canvas
+        n = cfg['n']
+        color = cfg['color']
+        hover_color = cfg['hover']
+        glow_color = cfg['glow']
+        
+        # 按钮背景（带圆角效果模拟）
+        corner = 12
+        # 主背景
+        bg_items = []
+        # 外发光
+        for offset in range(4, 0, -1):
+            glow_id = c.create_rectangle(x - offset, y - offset, x + w + offset, y + h + offset,
+                                        fill='', outline=glow_color, width=1)
+            bg_items.append(glow_id)
+        
+        # 主按钮背景
+        main_bg = c.create_rectangle(x, y, x + w, y + h, fill='#151c25', outline=color, width=2)
+        bg_items.append(main_bg)
+        
+        # 顶部高亮条
+        top_bar = c.create_rectangle(x + 2, y + 2, x + w - 2, y + 6, fill=color, outline='')
+        bg_items.append(top_bar)
+        
+        # 人数大字
+        num_text = c.create_text(x + w/2, y + 42, text=str(n), 
+                                fill=color, font=('Arial Black', 36, 'bold'))
+        
+        # "人" 字
+        ren_text = c.create_text(x + w/2 + 30, y + 50, text="人", 
+                                fill='#5a6a7a', font=('Microsoft YaHei', 12))
+        
+        # 标签文字
+        label_text = c.create_text(x + w/2, y + 85, text=cfg['label'], 
+                                  fill='#6a7a8a', font=('Microsoft YaHei', 10))
+        
+        all_items = bg_items + [num_text, ren_text, label_text]
+        
+        # 绑定点击事件
+        def on_click(event):
+            self._on_select(n)
+        
+        def on_enter(event):
+            c.itemconfig(main_bg, fill='#1a2530', outline=hover_color)
+            c.itemconfig(num_text, fill=hover_color)
+            c.itemconfig(top_bar, fill=hover_color)
+            c.config(cursor='hand2')
+        
+        def on_leave(event):
+            c.itemconfig(main_bg, fill='#151c25', outline=color)
+            c.itemconfig(num_text, fill=color)
+            c.itemconfig(top_bar, fill=color)
+            c.config(cursor='')
+        
+        # 为所有元素绑定事件
+        for item in all_items:
+            c.tag_bind(item, '<Button-1>', on_click)
+            c.tag_bind(item, '<Enter>', on_enter)
+            c.tag_bind(item, '<Leave>', on_leave)
+        
+        return {'items': all_items, 'n': n, 'color': color, 'hover': hover_color}
+
+    def _animate_glow(self):
+        """标题发光动画"""
+        if not self.winfo_exists():
+            return
+        
+        self._glow_phase = (self._glow_phase + 1) % 60
+        
+        # 计算颜色明度变化（正弦波）
+        brightness = 0.7 + 0.3 * math.sin(self._glow_phase * math.pi / 30)
+        
+        # 更新标题颜色
+        for item_type, item_id in self._glow_items:
+            if item_type == 'title':
+                # 绿色通道变化
+                g = int(255 * brightness)
+                b = int(170 * brightness)
+                color = f'#00{g:02x}{b:02x}'
+                try:
+                    self.main_canvas.itemconfig(item_id, fill=color)
+                except tk.TclError:
+                    return
+        
+        # 继续动画
+        self.after(50, self._animate_glow)
+
+    def _on_close(self):
+        self.selected_players = None
+        self.quit()
+
+    def _on_select(self, num_players):
+        if num_players in (2, 3, 4, 5):
+            self.selected_players = num_players
+            self.quit()
+        else:
+            messagebox.showinfo("提示", "请选择 2～5 人进行对战分析。")
+
+
 # --- GUI 应用 ---
 class PokerApp(tk.Tk):
-    def __init__(self, poker_logic):
+    def __init__(self, poker_logic, num_players=2):
         super().__init__()
         self.withdraw()
         self.wm_attributes('-alpha', 0.0)
 
         self.poker_logic = poker_logic
-        self.title("德州扑克分析工具")
+        self.num_players = num_players
+        title_suffix = " (三人模式)" if num_players == 3 else " (四人模式)" if num_players == 4 else " (五人模式)" if num_players == 5 else ""
+        self.title("德州扑克分析工具" + title_suffix)
         window_width = 1370
-        window_height = 960
+        # 四人/五人模式调大窗口高度，便于显示更多内容
+        window_height = 993 if num_players == 4 else 993 if num_players == 5 else 960
         
         # 获取图标路径（支持开发环境和 PyInstaller 打包环境）
         self._icon_path = None
@@ -1234,8 +2224,12 @@ class PokerApp(tk.Tk):
         self.analysis_thread = None
         self.analysis_result = None
         self.progress_var = tk.DoubleVar()
-        self.P1_COLOR = '#007bff'
-        self.P2_COLOR = '#dc3545'
+        # 四位玩家胜率条与按钮区分色：蓝、红、绿、紫
+        self.P1_COLOR = '#007bff'   # 玩家1 蓝
+        self.P2_COLOR = '#dc3545'   # 玩家2 红
+        self.P3_COLOR = '#28a745'   # 玩家3 绿
+        self.P4_COLOR = '#6f42c1'   # 玩家4 紫
+        self.P5_COLOR = '#fd7e14'   # 玩家5 橙
         self.BOTH_COLOR = '#8a2be2'
         self.DEFAULT_BG = '#4f4f4f'
         self.PAIR_BG = '#8fbc8f'
@@ -1373,6 +2367,9 @@ class PokerApp(tk.Tk):
         self.style.map('Treeview.Heading', background=[('active', '#6a6a6a')])
         self.style.configure("p1.Horizontal.TProgressbar", background=self.P1_COLOR)
         self.style.configure("p2.Horizontal.TProgressbar", background=self.P2_COLOR)
+        self.style.configure("p3.Horizontal.TProgressbar", background=self.P3_COLOR)
+        self.style.configure("p4.Horizontal.TProgressbar", background=self.P4_COLOR)
+        self.style.configure("p5.Horizontal.TProgressbar", background=self.P5_COLOR)
         self.style.configure("tie.Horizontal.TProgressbar", background='#6c757d')
         self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Microsoft YaHei', 10, 'bold'), borderwidth=1)
         self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
@@ -1396,18 +2393,113 @@ class PokerApp(tk.Tk):
         player_setup_frame.pack(fill='x', pady=5)
         player_setup_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(player_setup_frame, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=8, sticky='w')
         self.p1_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
-        ttk.Button(player_setup_frame, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=8)
-
-        ttk.Label(player_setup_frame, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=8, sticky='w')
         self.p2_hand_var = tk.StringVar()
-        ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
-        ttk.Button(player_setup_frame, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=8)
+        self.p3_hand_var = None
+        self.p4_hand_var = None
+        self.p5_hand_var = None
 
-        sim_frame = ttk.Frame(player_setup_frame)
-        sim_frame.grid(row=2, column=0, columnspan=3, pady=5, sticky='ew')
+        if self.num_players == 4:
+            # 四人模式：手牌/范围栏两组切换，节省高度
+            self._player_setup_group_var = tk.IntVar(value=1)  # 1=玩家1、2  2=玩家3、4
+            group_switch_row = ttk.Frame(player_setup_frame)
+            group_switch_row.grid(row=0, column=0, columnspan=3, sticky='w', padx=5, pady=(5, 2))
+            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家1、2 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
+            self._btn_players_12.pack(side='left', padx=2, ipady=3)
+            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家3、4 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
+            self._btn_players_34.pack(side='left', padx=2, ipady=3)
+
+            self._player_setup_frame_12 = ttk.Frame(player_setup_frame)
+            self._player_setup_frame_12.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+            self._player_setup_frame_12.columnconfigure(1, weight=1)
+            ttk.Label(self._player_setup_frame_12, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_12, textvariable=self.p1_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_12, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=6)
+            ttk.Label(self._player_setup_frame_12, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_12, textvariable=self.p2_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_12, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=6)
+
+            self.p3_hand_var = tk.StringVar()
+            self.p4_hand_var = tk.StringVar()
+            self._player_setup_frame_34 = ttk.Frame(player_setup_frame)
+            self._player_setup_frame_34.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+            self._player_setup_frame_34.columnconfigure(1, weight=1)
+            ttk.Label(self._player_setup_frame_34, text="玩家3 (手牌/范围):").grid(row=0, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_34, textvariable=self.p3_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_34, text="重置", command=self._reset_player3, width=8).grid(row=0, column=2, padx=5, pady=6)
+            ttk.Label(self._player_setup_frame_34, text="玩家4 (手牌/范围):").grid(row=1, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_34, textvariable=self.p4_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_34, text="重置", command=self._reset_player4, width=8).grid(row=1, column=2, padx=5, pady=6)
+            self._player_setup_frame_34.grid_remove()  # 默认显示 1、2 组
+
+            sim_frame = ttk.Frame(player_setup_frame)
+            sim_frame.grid(row=2, column=0, columnspan=3, pady=5, sticky='ew')
+        elif self.num_players == 5:
+            # 五人模式：手牌/范围栏三组切换（玩家1、2 | 玩家3、4 | 玩家5）
+            self._player_setup_group_var = tk.IntVar(value=1)
+            group_switch_row = ttk.Frame(player_setup_frame)
+            group_switch_row.grid(row=0, column=0, columnspan=3, sticky='w', padx=5, pady=(5, 2))
+            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家1、2 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
+            self._btn_players_12.pack(side='left', padx=2, ipady=3)
+            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家3、4 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
+            self._btn_players_34.pack(side='left', padx=2, ipady=3)
+            self._btn_players_5 = tk.Button(group_switch_row, text=" 玩家5 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(3), takefocus=0)
+            self._btn_players_5.pack(side='left', padx=2, ipady=3)
+
+            self._player_setup_frame_12 = ttk.Frame(player_setup_frame)
+            self._player_setup_frame_12.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+            self._player_setup_frame_12.columnconfigure(1, weight=1)
+            ttk.Label(self._player_setup_frame_12, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_12, textvariable=self.p1_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_12, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=6)
+            ttk.Label(self._player_setup_frame_12, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_12, textvariable=self.p2_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_12, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=6)
+
+            self.p3_hand_var = tk.StringVar()
+            self.p4_hand_var = tk.StringVar()
+            self.p5_hand_var = tk.StringVar()
+            self._player_setup_frame_34 = ttk.Frame(player_setup_frame)
+            self._player_setup_frame_34.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+            self._player_setup_frame_34.columnconfigure(1, weight=1)
+            ttk.Label(self._player_setup_frame_34, text="玩家3 (手牌/范围):").grid(row=0, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_34, textvariable=self.p3_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_34, text="重置", command=self._reset_player3, width=8).grid(row=0, column=2, padx=5, pady=6)
+            ttk.Label(self._player_setup_frame_34, text="玩家4 (手牌/范围):").grid(row=1, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_34, textvariable=self.p4_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_34, text="重置", command=self._reset_player4, width=8).grid(row=1, column=2, padx=5, pady=6)
+            self._player_setup_frame_34.grid_remove()
+
+            self._player_setup_frame_5 = ttk.Frame(player_setup_frame)
+            self._player_setup_frame_5.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+            self._player_setup_frame_5.columnconfigure(1, weight=1)
+            ttk.Label(self._player_setup_frame_5, text="玩家5 (手牌/范围):").grid(row=0, column=0, padx=10, pady=6, sticky='w')
+            ttk.Entry(self._player_setup_frame_5, textvariable=self.p5_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=6, sticky='ew')
+            ttk.Button(self._player_setup_frame_5, text="重置", command=self._reset_player5, width=8).grid(row=0, column=2, padx=5, pady=6)
+            self._player_setup_frame_5.grid_remove()
+
+            sim_frame = ttk.Frame(player_setup_frame)
+            sim_frame.grid(row=2, column=0, columnspan=3, pady=5, sticky='ew')
+        else:
+            # 两人或三人：直接显示所有玩家行
+            ttk.Label(player_setup_frame, text="玩家1 (手牌/范围):").grid(row=0, column=0, padx=10, pady=8, sticky='w')
+            ttk.Entry(player_setup_frame, textvariable=self.p1_hand_var, font=('Segoe UI Symbol', 12)).grid(row=0, column=1, padx=10, pady=8, sticky='ew')
+            ttk.Button(player_setup_frame, text="重置", command=self._reset_player1, width=8).grid(row=0, column=2, padx=5, pady=8)
+            ttk.Label(player_setup_frame, text="玩家2 (手牌/范围):").grid(row=1, column=0, padx=10, pady=8, sticky='w')
+            ttk.Entry(player_setup_frame, textvariable=self.p2_hand_var, font=('Segoe UI Symbol', 12)).grid(row=1, column=1, padx=10, pady=8, sticky='ew')
+            ttk.Button(player_setup_frame, text="重置", command=self._reset_player2, width=8).grid(row=1, column=2, padx=5, pady=8)
+            if self.num_players >= 3:
+                self.p3_hand_var = tk.StringVar()
+                ttk.Label(player_setup_frame, text="玩家3 (手牌/范围):").grid(row=2, column=0, padx=10, pady=8, sticky='w')
+                ttk.Entry(player_setup_frame, textvariable=self.p3_hand_var, font=('Segoe UI Symbol', 12)).grid(row=2, column=1, padx=10, pady=8, sticky='ew')
+                ttk.Button(player_setup_frame, text="重置", command=self._reset_player3, width=8).grid(row=2, column=2, padx=5, pady=8)
+            if self.num_players >= 4:
+                self.p4_hand_var = tk.StringVar()
+                ttk.Label(player_setup_frame, text="玩家4 (手牌/范围):").grid(row=3, column=0, padx=10, pady=8, sticky='w')
+                ttk.Entry(player_setup_frame, textvariable=self.p4_hand_var, font=('Segoe UI Symbol', 12)).grid(row=3, column=1, padx=10, pady=8, sticky='ew')
+                ttk.Button(player_setup_frame, text="重置", command=self._reset_player4, width=8).grid(row=3, column=2, padx=5, pady=8)
+            sim_frame = ttk.Frame(player_setup_frame)
+            sim_frame.grid(row=self.num_players, column=0, columnspan=3, pady=5, sticky='ew')
         ttk.Label(sim_frame, text="模拟次数:").pack(side='left', padx=10)
         self.num_simulations_var = tk.StringVar(value="50000")
         ttk.Entry(sim_frame, textvariable=self.num_simulations_var, width=15).pack(side='left')
@@ -1450,11 +2542,39 @@ class PokerApp(tk.Tk):
         self.p2_win_var = tk.StringVar(value="N/A")
         ttk.Label(result_grid, textvariable=self.p2_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=1, column=2, sticky='e', padx=10)
 
-        ttk.Label(result_grid, text="平局:", font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        self.p3_win_bar = None
+        self.p3_win_var = None
+        self.p4_win_bar = None
+        self.p4_win_var = None
+        self.p5_win_bar = None
+        self.p5_win_var = None
+        if self.num_players >= 3:
+            ttk.Label(result_grid, text="玩家3:", font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=0, sticky='w', padx=5, pady=5)
+            self.p3_win_bar = ttk.Progressbar(result_grid, style="p3.Horizontal.TProgressbar")
+            self.p3_win_bar.grid(row=2, column=1, sticky='ew', padx=5)
+            self.p3_win_var = tk.StringVar(value="N/A")
+            ttk.Label(result_grid, textvariable=self.p3_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=2, sticky='e', padx=10)
+        if self.num_players >= 4:
+            ttk.Label(result_grid, text="玩家4:", font=('Microsoft YaHei', 11, 'bold')).grid(row=3, column=0, sticky='w', padx=5, pady=5)
+            self.p4_win_bar = ttk.Progressbar(result_grid, style="p4.Horizontal.TProgressbar")
+            self.p4_win_bar.grid(row=3, column=1, sticky='ew', padx=5)
+            self.p4_win_var = tk.StringVar(value="N/A")
+            ttk.Label(result_grid, textvariable=self.p4_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=3, column=2, sticky='e', padx=10)
+        if self.num_players >= 5:
+            ttk.Label(result_grid, text="玩家5:", font=('Microsoft YaHei', 11, 'bold')).grid(row=4, column=0, sticky='w', padx=5, pady=5)
+            self.p5_win_bar = ttk.Progressbar(result_grid, style="p5.Horizontal.TProgressbar")
+            self.p5_win_bar.grid(row=4, column=1, sticky='ew', padx=5)
+            self.p5_win_var = tk.StringVar(value="N/A")
+            ttk.Label(result_grid, textvariable=self.p5_win_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=4, column=2, sticky='e', padx=10)
+
+        tie_row = self.num_players
         self.tie_bar = ttk.Progressbar(result_grid, style="tie.Horizontal.TProgressbar")
-        self.tie_bar.grid(row=2, column=1, sticky='ew', padx=5)
         self.tie_var = tk.StringVar(value="N/A")
-        ttk.Label(result_grid, textvariable=self.tie_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=2, column=2, sticky='e', padx=10)
+        # 五人模式不显示平局行（胜率已按人头均分，无单独平局条）
+        if self.num_players != 5:
+            ttk.Label(result_grid, text="平局:", font=('Microsoft YaHei', 11, 'bold')).grid(row=tie_row, column=0, sticky='w', padx=5, pady=5)
+            self.tie_bar.grid(row=tie_row, column=1, sticky='ew', padx=5)
+            ttk.Label(result_grid, textvariable=self.tie_var, font=('Microsoft YaHei', 11, 'bold')).grid(row=tie_row, column=2, sticky='e', padx=10)
 
         self._create_range_selector(parent_pane)
     
@@ -1553,6 +2673,18 @@ class PokerApp(tk.Tk):
         self.p1_radio_btn.pack(side='left', padx=5, ipady=4)
         self.p2_radio_btn = tk.Button(radio_frame, text="为玩家2选择", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#6a6a6a', activeforeground='white', command=lambda: self._select_player_for_range(2), takefocus=0)
         self.p2_radio_btn.pack(side='left', padx=5, ipady=4)
+        self.p3_radio_btn = None
+        self.p4_radio_btn = None
+        self.p5_radio_btn = None
+        if self.num_players >= 3:
+            self.p3_radio_btn = tk.Button(radio_frame, text="为玩家3选择", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#1e7e34', activeforeground='white', command=lambda: self._select_player_for_range(3), takefocus=0)
+            self.p3_radio_btn.pack(side='left', padx=5, ipady=4)
+        if self.num_players >= 4:
+            self.p4_radio_btn = tk.Button(radio_frame, text="为玩家4选择", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#c9182a', activeforeground='white', command=lambda: self._select_player_for_range(4), takefocus=0)
+            self.p4_radio_btn.pack(side='left', padx=5, ipady=4)
+        if self.num_players >= 5:
+            self.p5_radio_btn = tk.Button(radio_frame, text="为玩家5选择", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), borderwidth=0, activebackground='#e85d04', activeforeground='white', command=lambda: self._select_player_for_range(5), takefocus=0)
+            self.p5_radio_btn.pack(side='left', padx=5, ipady=4)
 
         grid_frame = ttk.Frame(range_frame); grid_frame.pack(pady=10, padx=10)
         self.range_buttons = {}
@@ -1584,11 +2716,21 @@ class PokerApp(tk.Tk):
                     return categories
                 p1_cats = get_categories(self.p1_hand_var)
                 p2_cats = get_categories(self.p2_hand_var)
+                p3_cats = get_categories(self.p3_hand_var) if self.p3_hand_var is not None else set()
+                p4_cats = get_categories(self.p4_hand_var) if self.p4_hand_var is not None else set()
+                p5_cats = get_categories(self.p5_hand_var) if self.p5_hand_var is not None else set()
                 in_p1 = hand in p1_cats
                 in_p2 = hand in p2_cats
-                if in_p1 and in_p2: return self.BOTH_COLOR
+                in_p3 = hand in p3_cats
+                in_p4 = hand in p4_cats
+                in_p5 = hand in p5_cats
+                any_overlap = (in_p1 and in_p2 or in_p1 and in_p3 or in_p1 and in_p4 or in_p1 and in_p5 or in_p2 and in_p3 or in_p2 and in_p4 or in_p2 and in_p5 or in_p3 and in_p4 or in_p3 and in_p5 or in_p4 and in_p5)
+                if any_overlap: return self.BOTH_COLOR
                 elif in_p1: return self.P1_COLOR
                 elif in_p2: return self.P2_COLOR
+                elif in_p3: return self.P3_COLOR
+                elif in_p4: return self.P4_COLOR
+                elif in_p5: return self.P5_COLOR
                 else:
                     if len(hand) == 2: return self.PAIR_BG
                     elif hand.endswith('s'): return self.SUITED_BG
@@ -1643,6 +2785,43 @@ class PokerApp(tk.Tk):
                 self.range_buttons[text] = btn
                 create_hover_effect(btn, text)
 
+    def _switch_player_setup_group(self, group):
+        """四人/五人模式：切换玩家设置栏显示的组。四人：1=玩家1、2，2=玩家3、4。五人：1=玩家1、2，2=玩家3、4，3=玩家5。"""
+        if self.num_players not in (4, 5) or not hasattr(self, '_player_setup_frame_12'):
+            return
+        if self.num_players == 5 and hasattr(self, '_player_setup_frame_5'):
+            # 五人模式：三组
+            self._player_setup_frame_12.grid_remove()
+            self._player_setup_frame_34.grid_remove()
+            self._player_setup_frame_5.grid_remove()
+            self._btn_players_12.config(bg='#4a4a4a')
+            self._btn_players_34.config(bg='#4a4a4a')
+            self._btn_players_5.config(bg='#4a4a4a')
+            if group == 1:
+                self._player_setup_frame_12.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+                self._btn_players_12.config(bg=self.P1_COLOR)
+            elif group == 2:
+                self._player_setup_frame_34.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+                self._btn_players_34.config(bg=self.P4_COLOR)
+            else:
+                self._player_setup_frame_5.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+                self._btn_players_5.config(bg=self.P5_COLOR)
+            self._player_setup_group_var.set(group)
+        else:
+            # 四人模式：两组
+            if group == 1:
+                self._player_setup_frame_34.grid_remove()
+                self._player_setup_frame_12.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+                self._player_setup_group_var.set(1)
+                self._btn_players_12.config(bg=self.P1_COLOR)
+                self._btn_players_34.config(bg='#4a4a4a')
+            else:
+                self._player_setup_frame_12.grid_remove()
+                self._player_setup_frame_34.grid(row=1, column=0, columnspan=3, sticky='ew', pady=0)
+                self._player_setup_group_var.set(2)
+                self._btn_players_12.config(bg='#4a4a4a')
+                self._btn_players_34.config(bg=self.P4_COLOR)
+
     def _reset_player1(self):
         self.p1_hand_var.set("")
         self._update_range_grid_colors()
@@ -1650,11 +2829,32 @@ class PokerApp(tk.Tk):
     def _reset_player2(self):
         self.p2_hand_var.set("")
         self._update_range_grid_colors()
+
+    def _reset_player3(self):
+        if self.p3_hand_var is not None:
+            self.p3_hand_var.set("")
+            self._update_range_grid_colors()
+
+    def _reset_player4(self):
+        if self.p4_hand_var is not None:
+            self.p4_hand_var.set("")
+            self._update_range_grid_colors()
+
+    def _reset_player5(self):
+        if self.p5_hand_var is not None:
+            self.p5_hand_var.set("")
+            self._update_range_grid_colors()
     
     def _select_player_for_range(self, player_num):
         self.active_player_for_range.set(player_num)
         self.p1_radio_btn.config(bg=self.P1_COLOR if player_num == 1 else '#4a4a4a')
         self.p2_radio_btn.config(bg=self.P2_COLOR if player_num == 2 else '#4a4a4a')
+        if getattr(self, 'p3_radio_btn', None) is not None:
+            self.p3_radio_btn.config(bg=self.P3_COLOR if player_num == 3 else '#4a4a4a')
+        if getattr(self, 'p4_radio_btn', None) is not None:
+            self.p4_radio_btn.config(bg=self.P4_COLOR if player_num == 4 else '#4a4a4a')
+        if getattr(self, 'p5_radio_btn', None) is not None:
+            self.p5_radio_btn.config(bg=self.P5_COLOR if player_num == 5 else '#4a4a4a')
 
     def _on_board_card_select(self, card_str):
         if card_str in self.board_cards:
@@ -1723,7 +2923,18 @@ class PokerApp(tk.Tk):
     
     def toggle_range_button(self, hand_text):
         active_player = self.active_player_for_range.get()
-        entry_var = self.p1_hand_var if active_player == 1 else self.p2_hand_var
+        if active_player == 1:
+            entry_var = self.p1_hand_var
+        elif active_player == 2:
+            entry_var = self.p2_hand_var
+        elif active_player == 3 and self.p3_hand_var is not None:
+            entry_var = self.p3_hand_var
+        elif active_player == 4 and self.p4_hand_var is not None:
+            entry_var = self.p4_hand_var
+        elif active_player == 5 and self.p5_hand_var is not None:
+            entry_var = self.p5_hand_var
+        else:
+            entry_var = self.p2_hand_var
         current_text = entry_var.get()
         current_items_list = [s.strip() for s in current_text.split(',') if s.strip()]
         current_items_set = set(current_items_list)
@@ -1752,7 +2963,18 @@ class PokerApp(tk.Tk):
                 if result_hand_str is None: return 
 
                 active_player_inner = self.active_player_for_range.get()
-                entry_var_inner = self.p1_hand_var if active_player_inner == 1 else self.p2_hand_var
+                if active_player_inner == 1:
+                    entry_var_inner = self.p1_hand_var
+                elif active_player_inner == 2:
+                    entry_var_inner = self.p2_hand_var
+                elif active_player_inner == 3 and self.p3_hand_var is not None:
+                    entry_var_inner = self.p3_hand_var
+                elif active_player_inner == 4 and self.p4_hand_var is not None:
+                    entry_var_inner = self.p4_hand_var
+                elif active_player_inner == 5 and self.p5_hand_var is not None:
+                    entry_var_inner = self.p5_hand_var
+                else:
+                    entry_var_inner = self.p2_hand_var
                 current_text_inner = entry_var_inner.get()
                 current_items_list_inner = [s.strip() for s in current_text_inner.split(',') if s.strip()]
                 current_items_set_inner = set(current_items_list_inner)
@@ -1803,13 +3025,23 @@ class PokerApp(tk.Tk):
 
         p1_categories = get_all_selected_categories(self.p1_hand_var)
         p2_categories = get_all_selected_categories(self.p2_hand_var)
+        p3_categories = get_all_selected_categories(self.p3_hand_var) if self.p3_hand_var is not None else set()
+        p4_categories = get_all_selected_categories(self.p4_hand_var) if self.p4_hand_var is not None else set()
+        p5_categories = get_all_selected_categories(self.p5_hand_var) if self.p5_hand_var is not None else set()
 
         for hand, btn in self.range_buttons.items():
             in_p1 = hand in p1_categories
             in_p2 = hand in p2_categories
-            if in_p1 and in_p2: btn.config(bg=self.BOTH_COLOR, relief='sunken')
+            in_p3 = hand in p3_categories
+            in_p4 = hand in p4_categories
+            in_p5 = hand in p5_categories
+            any_overlap = (in_p1 and in_p2 or in_p1 and in_p3 or in_p1 and in_p4 or in_p1 and in_p5 or in_p2 and in_p3 or in_p2 and in_p4 or in_p2 and in_p5 or in_p3 and in_p4 or in_p3 and in_p5 or in_p4 and in_p5)
+            if any_overlap: btn.config(bg=self.BOTH_COLOR, relief='sunken')
             elif in_p1: btn.config(bg=self.P1_COLOR, relief='sunken')
             elif in_p2: btn.config(bg=self.P2_COLOR, relief='sunken')
+            elif in_p3: btn.config(bg=self.P3_COLOR, relief='sunken')
+            elif in_p4: btn.config(bg=self.P4_COLOR, relief='sunken')
+            elif in_p5: btn.config(bg=self.P5_COLOR, relief='sunken')
             else:
                 if len(hand) == 2: bg = self.PAIR_BG
                 elif hand.endswith('s'): bg = self.SUITED_BG
@@ -1817,7 +3049,15 @@ class PokerApp(tk.Tk):
                 btn.config(bg=bg, relief='raised')
 
     def clear_all(self):
-        self._reset_player1(); self._reset_player2(); self._reset_board_selector()
+        self._reset_player1()
+        self._reset_player2()
+        if self.p3_hand_var is not None:
+            self._reset_player3()
+        if self.p4_hand_var is not None:
+            self._reset_player4()
+        if self.p5_hand_var is not None:
+            self._reset_player5()
+        self._reset_board_selector()
         for i in self.strength_tree.get_children(): self.strength_tree.delete(i)
         self._reset_equity_display()
                 
@@ -1830,6 +3070,12 @@ class PokerApp(tk.Tk):
     def _reset_equity_display(self):
         self.p1_win_var.set("N/A"); self.p1_win_bar['value'] = 0
         self.p2_win_var.set("N/A"); self.p2_win_bar['value'] = 0
+        if self.p3_win_var is not None:
+            self.p3_win_var.set("N/A"); self.p3_win_bar['value'] = 0
+        if self.p4_win_var is not None:
+            self.p4_win_var.set("N/A"); self.p4_win_bar['value'] = 0
+        if self.p5_win_var is not None:
+            self.p5_win_var.set("N/A"); self.p5_win_bar['value'] = 0
         self.tie_var.set("N/A"); self.tie_bar['value'] = 0
         self.progress_var.set(0)
 
@@ -1872,8 +3118,20 @@ class PokerApp(tk.Tk):
                 self.p1_win_bar['value'] = equity['p1_win']
                 self.p2_win_var.set(f"{equity['p2_win']:.2f}%")
                 self.p2_win_bar['value'] = equity['p2_win']
-                self.tie_var.set(f"{equity['tie']:.2f}%")
-                self.tie_bar['value'] = equity['tie']
+                if 'p3_win' in equity or 'p4_win' in equity or 'p5_win' in equity:
+                    if self.p3_win_var is not None and 'p3_win' in equity:
+                        self.p3_win_var.set(f"{equity['p3_win']:.2f}%")
+                        self.p3_win_bar['value'] = equity['p3_win']
+                    if self.p4_win_var is not None and 'p4_win' in equity:
+                        self.p4_win_var.set(f"{equity['p4_win']:.2f}%")
+                        self.p4_win_bar['value'] = equity['p4_win']
+                    if self.p5_win_var is not None and 'p5_win' in equity:
+                        self.p5_win_var.set(f"{equity['p5_win']:.2f}%")
+                        self.p5_win_bar['value'] = equity['p5_win']
+                    self.tie_var.set("0.00%"); self.tie_bar['value'] = 0
+                else:
+                    self.tie_var.set(f"{equity['tie']:.2f}%")
+                    self.tie_bar['value'] = equity['tie']
                 
                 if int(self.num_simulations_var.get()) == 0: self.progress_var.set(0)
                 else: self.progress_var.set(self.analysis_progress_bar.max_val)
@@ -1906,11 +3164,36 @@ class PokerApp(tk.Tk):
                 max_sims = self.analysis_progress_bar.max_val      
                 self.progress_var.set(min(current_sim, max_sims))
 
-            self.analysis_result = self.poker_logic.run_analysis(
-                p1_input, p2_input, board_input, 
-                num_simulations=num_sims, 
-                progress_callback=progress_update
-            )
+            if self.num_players == 3:
+                p3_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p3_hand_var.get().split(',') if s.strip()] if self.p3_hand_var else []
+                self.analysis_result = self.poker_logic.run_analysis_3way(
+                    p1_input, p2_input, p3_input, board_input,
+                    num_simulations=num_sims,
+                    progress_callback=progress_update
+                )
+            elif self.num_players == 4:
+                p3_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p3_hand_var.get().split(',') if s.strip()] if self.p3_hand_var else []
+                p4_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p4_hand_var.get().split(',') if s.strip()] if self.p4_hand_var else []
+                self.analysis_result = self.poker_logic.run_analysis_4way(
+                    p1_input, p2_input, p3_input, p4_input, board_input,
+                    num_simulations=num_sims,
+                    progress_callback=progress_update
+                )
+            elif self.num_players == 5:
+                p3_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p3_hand_var.get().split(',') if s.strip()] if self.p3_hand_var else []
+                p4_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p4_hand_var.get().split(',') if s.strip()] if self.p4_hand_var else []
+                p5_input = [self._parse_hand_from_display(s.strip()).upper() for s in self.p5_hand_var.get().split(',') if s.strip()] if self.p5_hand_var else []
+                self.analysis_result = self.poker_logic.run_analysis_5way(
+                    p1_input, p2_input, p3_input, p4_input, p5_input, board_input,
+                    num_simulations=num_sims,
+                    progress_callback=progress_update
+                )
+            else:
+                self.analysis_result = self.poker_logic.run_analysis(
+                    p1_input, p2_input, board_input,
+                    num_simulations=num_sims,
+                    progress_callback=progress_update
+                )
         except Exception as e:
             self.analysis_result = e
 
@@ -1921,5 +3204,15 @@ if __name__ == "__main__":
             multiprocessing.set_start_method('spawn', force=True)
         except RuntimeError:
             pass
-    app = PokerApp(PokerLogic())
-    app.mainloop()
+    # 先显示启动页，选择 2/3/4/5/6 人模式
+    startup = StartupWindow()
+    startup.mainloop()
+    try:
+        startup.destroy()
+    except tk.TclError:
+        pass
+    # 2 / 3 / 4 / 5 人模式进入主分析界面
+    selected = getattr(startup, 'selected_players', None)
+    if selected in (2, 3, 4, 5):
+        app = PokerApp(PokerLogic(), num_players=selected)
+        app.mainloop()
