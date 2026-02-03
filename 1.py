@@ -1377,7 +1377,7 @@ class PokerApp(tk.Tk):
         self.style.configure('TButton', background='#4a4a4a', foreground='white', font=('Microsoft YaHei', 10, 'bold'), borderwidth=1)
         self.style.map('TButton', background=[('active', '#6a6a6a'), ('disabled', '#3a3a3a')])
         self.style.layout('TButton', [('Button.border', {'children': [('Button.padding', {'children': [('Button.label', {'side': 'left', 'expand': 1})]})]})])
-
+ 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill='both', expand=True)
