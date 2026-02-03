@@ -13,3 +13,4 @@
 ## ⬇️ 下载
 
 [![Download](https://img.shields.io/badge/Download-v1.0-blue?style=for-the-badge)](https://github.com/HistoriaNonVult/Texas-Poker/releases/tag/v1.0)
+[![Download](https://img.shields.io/badge/Download-v2.0-blue?style=for-the-badge)](https://github.com/HistoriaNonVult/Texas-Poker/releases/tag/v2.0)
