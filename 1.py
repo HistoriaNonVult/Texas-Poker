@@ -2228,7 +2228,7 @@ class PokerApp(tk.Tk):
         self.P1_COLOR = '#007bff'   # 玩家1 蓝
         self.P2_COLOR = '#dc3545'   # 玩家2 红
         self.P3_COLOR = '#28a745'   # 玩家3 绿
-        self.P4_COLOR = '#6f42c1'   # 玩家4 紫
+        self.P4_COLOR = '#17a2b8'   # 玩家4 青
         self.P5_COLOR = '#fd7e14'   # 玩家5 橙
         self.BOTH_COLOR = '#8a2be2'
         self.DEFAULT_BG = '#4f4f4f'
@@ -2404,9 +2404,9 @@ class PokerApp(tk.Tk):
             self._player_setup_group_var = tk.IntVar(value=1)  # 1=玩家1、2  2=玩家3、4
             group_switch_row = ttk.Frame(player_setup_frame)
             group_switch_row.grid(row=0, column=0, columnspan=3, sticky='w', padx=5, pady=(5, 2))
-            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家1、2 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
+            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家12 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
             self._btn_players_12.pack(side='left', padx=2, ipady=3)
-            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家3、4 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
+            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家34 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
             self._btn_players_34.pack(side='left', padx=2, ipady=3)
 
             self._player_setup_frame_12 = ttk.Frame(player_setup_frame)
@@ -2439,9 +2439,9 @@ class PokerApp(tk.Tk):
             self._player_setup_group_var = tk.IntVar(value=1)
             group_switch_row = ttk.Frame(player_setup_frame)
             group_switch_row.grid(row=0, column=0, columnspan=3, sticky='w', padx=5, pady=(5, 2))
-            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家1、2 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
+            self._btn_players_12 = tk.Button(group_switch_row, text=" 玩家12 ", relief='flat', bg=self.P1_COLOR, fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(1), takefocus=0)
             self._btn_players_12.pack(side='left', padx=2, ipady=3)
-            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家3、4 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
+            self._btn_players_34 = tk.Button(group_switch_row, text=" 玩家34 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(2), takefocus=0)
             self._btn_players_34.pack(side='left', padx=2, ipady=3)
             self._btn_players_5 = tk.Button(group_switch_row, text=" 玩家5 ", relief='flat', bg='#4a4a4a', fg='white', font=('Microsoft YaHei', 9, 'bold'), cursor='hand2', command=lambda: self._switch_player_setup_group(3), takefocus=0)
             self._btn_players_5.pack(side='left', padx=2, ipady=3)
