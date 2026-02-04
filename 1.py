@@ -2247,10 +2247,12 @@ class PokerApp(tk.Tk):
         ]
         
         self.strength_chart_window = None
+        self.want_restart = False  # Backspace 回到启动页时设为 True
         self._configure_styles()
         self._create_widgets()
         self.bind_all('<KeyPress>', self._handle_window_movement)
         self.bind_all('<Return>', self._on_enter_key_pressed)
+        self.bind_all('<BackSpace>', self._on_backspace_pressed)
         
         self.deiconify()
         # 窗口显示后再次确保图标正确设置
@@ -2299,6 +2301,16 @@ class PokerApp(tk.Tk):
         # 如果分析按钮处于可用状态，则触发分析
         if str(self.calc_button['state']) != 'disabled':
             self.run_analysis_thread()
+
+    def _on_backspace_pressed(self, event):
+        """处理 Backspace 键：回到启动页（当前焦点在输入框时不响应）"""
+        if self.strength_chart_window and self.strength_chart_window.winfo_exists():
+            return
+        focused = self.focus_get()
+        if focused and isinstance(focused, (ttk.Entry, tk.Entry)):
+            return
+        self.want_restart = True
+        self.quit()
 
     def _open_strength_chart(self):
         if StrengthChartWindow is None:
@@ -3204,15 +3216,23 @@ if __name__ == "__main__":
             multiprocessing.set_start_method('spawn', force=True)
         except RuntimeError:
             pass
-    # 先显示启动页，选择 2/3/4/5/6 人模式
-    startup = StartupWindow()
-    startup.mainloop()
-    try:
-        startup.destroy()
-    except tk.TclError:
-        pass
-    # 2 / 3 / 4 / 5 人模式进入主分析界面
-    selected = getattr(startup, 'selected_players', None)
-    if selected in (2, 3, 4, 5):
+    while True:
+        # 先显示启动页，选择 2/3/4/5/6 人模式
+        startup = StartupWindow()
+        startup.mainloop()
+        try:
+            startup.destroy()
+        except tk.TclError:
+            pass
+        selected = getattr(startup, 'selected_players', None)
+        if selected is None or selected not in (2, 3, 4, 5):
+            break
+        # 2 / 3 / 4 / 5 人模式进入主分析界面
         app = PokerApp(PokerLogic(), num_players=selected)
         app.mainloop()
+        if not getattr(app, 'want_restart', False):
+            break
+        try:
+            app.destroy()
+        except tk.TclError:
+            pass
